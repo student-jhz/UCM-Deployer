@@ -113,6 +113,7 @@ UCM-Deployer/
 | 2 | device_detector（npu-smi/nvidia-smi 解析、型号一致性校验）+ docker_manager（镜像/容器/UCM 检查/load/build/exec/cp）+ 25 项测试 | ✅ 已提交 |
 | 3 | image_builder（Dockerfile 生成/whl 上传/构建/校验/取消）+ container_manager（Ascend/NVIDIA docker run 生成、共享文件系统校验、目录浏览）+ 23 项测试 | ✅ 已提交 |
 | 4 | topology（混部/PD 拓扑建模与校验、DP 进程分配）+ command_generator（vLLM/SGLang + UCM 全量脚本生成）+ resource_checker + service/deploy_service（部署/拉起/日志/健康检查编排）+ 35 项测试 | ✅ 已提交 |
+| 5 | mock 模拟 SSH 服务器（paramiko 服务端 + SFTP + docker/npu-smi 状态机）+ CLI（mock-server/self-test/check/build）+ 端到端测试 13 项 | ✅ 已提交 |
 | 4 | topology + command_generator | ⬜ |
 | 5 | mock server + CLI + e2e | ⬜ |
 | 6 | GUI | ⬜ |
