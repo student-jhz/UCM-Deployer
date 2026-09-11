@@ -188,7 +188,8 @@ class FakeSSHClient:
 
     # ---- 脚本配置 ----
     def match(self, command: str) -> Optional[ScriptedResponse]:
-        for resp in self.script:
+        # 后注册的优先（便于测试中覆盖同 pattern 的响应）
+        for resp in reversed(self.script):
             if re.search(resp.pattern, command):
                 return resp
         return None

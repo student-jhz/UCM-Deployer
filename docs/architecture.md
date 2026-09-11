@@ -110,7 +110,7 @@ UCM-Deployer/
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | 1 | 基础框架：models/crypto/ssh_client/server_registry + 26 项单元测试 | ✅ 已提交 |
-| 2 | device_detector + docker_manager | ⬜ |
+| 2 | device_detector（npu-smi/nvidia-smi 解析、型号一致性校验）+ docker_manager（镜像/容器/UCM 检查/load/build/exec/cp）+ 25 项测试 | ✅ 已提交 |
 | 3 | image_builder + container_manager | ⬜ |
 | 4 | topology + command_generator | ⬜ |
 | 5 | mock server + CLI + e2e | ⬜ |
