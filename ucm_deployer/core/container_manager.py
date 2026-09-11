@@ -79,7 +79,7 @@ def _is_network_fs(entry: FsEntry) -> bool:
     return entry.fstype.lower() in NETWORK_FS_TYPES or ":" in entry.source
 
 
-def _evaluate_shared_fs(entries: List[FsEntry]) -> SharedFsReport:
+def evaluate_shared_fs(entries: List[FsEntry]) -> SharedFsReport:
     report = SharedFsReport(entries=entries)
     if not entries:
         report.ok = False
@@ -158,7 +158,7 @@ def check_shared_fs(ssh_by_server: Dict[str, SSHClient], dirs: List[str]) -> Sha
             entries.append(FsEntry(server, d,
                                    source=parts[0] if parts else "",
                                    fstype=parts[1] if len(parts) > 1 else ""))
-    return _evaluate_shared_fs(entries)
+    return evaluate_shared_fs(entries)
 
 
 class ContainerManager:
@@ -178,7 +178,8 @@ class ContainerManager:
         return 0
 
     # ------------------------------------------------------------ 命令生成
-    def generate_run_command(self, cfg: ContainerCreateConfig) -> str:
+    @staticmethod
+    def generate_run_command(cfg: ContainerCreateConfig) -> str:
         cfg.validate()
         lines = ["docker run -itd"]
         lines.append(f"    --name {shq(cfg.name)}")
