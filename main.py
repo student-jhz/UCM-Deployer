@@ -2,13 +2,47 @@
 """UCM Deployer GUI 入口。
 
 用法：
-    python main.py            # 启动图形界面
-    python main.py --smoke    # 无头冒烟自检（实例化全部页面后退出）
+    UCM-Deployer.exe / python main.py     # 启动图形界面
+    --smoke                               # 无头冒烟自检（实例化全部页面后退出）
+    --selftest [--out 文件路径]            # 内置端到端自检（模拟服务器全流程），退出码 0/1
 """
 import sys
 
 
+def _run_selftest(argv) -> int:
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from ucm_deployer.mock.selftest import run_selftest
+
+    out_path = None
+    if "--out" in argv:
+        try:
+            out_path = argv[argv.index("--out") + 1]
+        except IndexError:
+            pass
+    ok, report = run_selftest(progress=lambda m: None)
+    text = "\n".join(report)
+    if out_path:
+        with open(out_path, "w", encoding="utf-8") as fh:
+            fh.write(text + "\n")
+    else:
+        try:
+            from PySide6.QtWidgets import QApplication, QMessageBox
+
+            app = QApplication.instance() or QApplication([])
+            QMessageBox.information(
+                None, "UCM Deployer 自检",
+                text + ("\n（使用 --out 文件路径 可导出报告）"))
+        except Exception:
+            print(text)
+    return 0 if ok else 1
+
+
 def main() -> int:
+    if "--selftest" in sys.argv:
+        return _run_selftest(sys.argv)
+
     if "--smoke" in sys.argv:
         import os
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")

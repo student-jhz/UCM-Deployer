@@ -115,6 +115,20 @@ UCM-Deployer/
 | 4 | topology（混部/PD 拓扑建模与校验、DP 进程分配）+ command_generator（vLLM/SGLang + UCM 全量脚本生成）+ resource_checker + service/deploy_service（部署/拉起/日志/健康检查编排）+ 35 项测试 | ✅ 已提交 |
 | 5 | mock 模拟 SSH 服务器（paramiko 服务端 + SFTP + docker/npu-smi 状态机）+ CLI（mock-server/self-test/check/build）+ 端到端测试 13 项 | ✅ 已提交 |
 | 6 | PySide6 GUI 五步向导（服务器/镜像/容器/部署/拉起），ParallelTaskPanel 多服务器并行进度+日志，脚本编辑器，5 项 GUI 测试（含模拟服务器全链路） | ✅ 已提交 |
+| 7 | PyInstaller 打包（单文件窗口 exe 46.7MB，`--selftest`/`--smoke` 产物级自检通过）+ 用户手册 + README | ✅ 已提交 |
+
+### 7.1 打包产物自验证
+
+`dist\UCM-Deployer.exe` 构建后执行：
+
+- `UCM-Deployer.exe --selftest --out report.txt` → 退出码 0，15 步全流程（模拟服务器）在打包环境中通过；
+- `UCM-Deployer.exe --smoke` → 退出码 0，五页面 offscreen 实例化通过。
+
+### 7.2 测试总账
+
+- 单元/集成测试：127 通过 / 6 跳过（bash -n：本机 WSL 损坏，有 bash 的环境自动启用；真实服务器测试：需环境变量 `UCM_TEST_REAL_HOST`）
+- CLI 自检：`self-test` ascend/nvidia 均通过
+- 期间发现并修复的问题：paramiko 5.0 SFTPHandle 构造签名（首参为 flags）、SFTP open() 收到的是 os.* 标志、模拟服务器 exec worker 与 paramiko 包线程的 EOF 竞态（服务端不主动 close）、offscreen 模式模态对话框阻塞（自动应答）。
 | 4 | topology + command_generator | ⬜ |
 | 5 | mock server + CLI + e2e | ⬜ |
 | 6 | GUI | ⬜ |
