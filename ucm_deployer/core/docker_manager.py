@@ -154,8 +154,8 @@ class DockerManager:
     def exec_in_container(self, container: str, cmd: str, detach: bool = False,
                           on_line: Optional[Callable[[str], None]] = None,
                           timeout: Optional[float] = 300) -> CommandResult:
-        d = "-d" if detach else ""
-        full = f"docker exec {d} {shq(container)} /bin/bash -c {shq(cmd)}"
+        d = "-d " if detach else ""
+        full = f"docker exec {d}{shq(container)} /bin/bash -c {shq(cmd)}"
         if detach:
             return self.ssh.exec(full, timeout=timeout or 60)
         return self.ssh.exec_stream(full, on_line=on_line, timeout=timeout)
