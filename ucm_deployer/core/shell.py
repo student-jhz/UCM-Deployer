@@ -18,3 +18,10 @@ def shq(text: str) -> str:
     if _SAFE.match(text):
         return text
     return "'" + text.replace("'", "'\"'\"'") + "'"
+
+
+def flatten_command(cmd: str) -> str:
+    """把带反斜杠续行的多行命令压成单行（保留引号内空格）。"""
+    text = cmd.replace("\\\r\n", "\n").replace("\\\n", "\n")
+    parts = [line.strip() for line in text.split("\n")]
+    return " ".join(p for p in parts if p)
