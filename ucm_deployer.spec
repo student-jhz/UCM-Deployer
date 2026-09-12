@@ -6,7 +6,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('docs/用户手册.md', 'docs')],
     hiddenimports=[
         'paramiko',
         'cryptography',

@@ -10,11 +10,15 @@ def run(argv=None) -> int:
 
     from ..utils.log import setup_logging
     from .main_window import MainWindow
+    from .theme import QSS, make_app_icon
 
     setup_logging()
     app = QApplication(argv if argv is not None else sys.argv)
     app.setApplicationName("UCM Deployer")
     app.setOrganizationName("UCM-Deployer")
+    app.setStyle("Fusion")
+    app.setStyleSheet(QSS)
+    app.setWindowIcon(make_app_icon())
     win = MainWindow()
     win.show()
     return app.exec()

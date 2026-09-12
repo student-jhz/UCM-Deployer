@@ -39,13 +39,21 @@ class ImagePage(QWidget):
         image_box = QGroupBox("1. 选择基础镜像（每台服务器）")
         self.image_rows: Dict[str, QComboBox] = {}
         self.image_form = QFormLayout()
-        image_box.setLayout(self.image_form)
+        self.placeholder = QLabel("请先在「1. 服务器管理」勾选要部署的服务器")
+        self.placeholder.setProperty("role", "hint")
+        self.placeholder.setAlignment(Qt.AlignCenter)
+        self.placeholder.setMinimumHeight(48)
+        image_box.setLayout(QVBoxLayout())
+        image_box.layout().addWidget(self.placeholder)
+        image_box.layout().addLayout(self.image_form)
         refresh_btn = QPushButton("🔄 刷新镜像列表")
         check_ucm_btn = QPushButton("✅ 检查所选镜像 UCM")
         upload_btn = QPushButton("⬆ 上传镜像 tar/tar.gz 并 docker load")
         refresh_btn.clicked.connect(self._refresh_images)
         check_ucm_btn.clicked.connect(self._check_ucm)
         upload_btn.clicked.connect(self._upload_tar)
+        for b in (refresh_btn, check_ucm_btn, upload_btn):
+            b.setToolTip("对步骤1勾选的全部服务器并行执行")
 
         # ---------- 构建参数区
         build_box = QGroupBox("2. UCM 安装与镜像构建")
@@ -90,6 +98,7 @@ class ImagePage(QWidget):
         form.addRow("构建平台(ENV PLATFORM)", self.platform_label)
 
         build_btn = QPushButton("🔨 开始构建（全部服务器）")
+        build_btn.setProperty("accent", True)
         build_btn.clicked.connect(self._build)
         use_existing_btn = QPushButton("⏭ 使用已有 UCM 镜像，跳过构建")
         use_existing_btn.clicked.connect(self._use_existing)
@@ -128,31 +137,54 @@ class ImagePage(QWidget):
             if w is not None:
                 w.deleteLater()
         self.image_rows.clear()
+        self.placeholder.setVisible(not self.ctx.selected)
         for s in self.ctx.selected:
             combo = QComboBox()
             combo.setEditable(True)
             combo.setMinimumWidth(360)
+            combo.currentTextChanged.connect(self._suggest_tag_if_empty)
             self.image_rows[s.id] = combo
             self.image_form.addRow(f"{s.name} ({s.host})", combo)
         devs = {s.id: self.ctx.device_of(s) for s in self.ctx.selected}
         types = {d.device_type.value for d in devs.values()}
         platform = "ascend" if types == {"ascend"} else ("cuda" if types == {"nvidia"} else "ascend")
         self.platform_label.setText(platform)
-        if not self._image_lists:
-            self._refresh_images()
+        # 任一已选服务器缺少镜像列表时刷新；否则直接回填已知列表
+        missing = [s for s in self.ctx.selected if s.id not in self._image_lists]
+        if missing or not self.image_rows:
+            if self.ctx.selected:
+                self._refresh_images()
+        else:
+            self._apply_image_lists()
+
+    def _suggest_tag_if_empty(self, *_):
+        if not self.tag_edit.text().strip():
+            first = next(iter(self.image_rows.values()), None)
+            if first is not None and first.currentText():
+                self.tag_edit.setText(suggest_tag(first.currentText()))
 
     def _servers(self) -> List[ServerInfo]:
         return self.ctx.selected
 
     def _pick_file(self, edit: QLineEdit, flt: str) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "选择文件", "", flt)
+        from PySide6.QtCore import QSettings
+
+        settings = QSettings("UCM-Deployer", "paths")
+        start = str(settings.value("last_file_dir", ""))
+        path, _ = QFileDialog.getOpenFileName(self, "选择文件", start, flt)
         if path:
             edit.setText(path)
+            settings.setValue("last_file_dir", os.path.dirname(path))
 
     def _pick_dir(self, edit: QLineEdit) -> None:
-        path = QFileDialog.getExistingDirectory(self, "选择 ucm-toolkit 源码目录")
+        from PySide6.QtCore import QSettings
+
+        settings = QSettings("UCM-Deployer", "paths")
+        start = str(settings.value("last_file_dir", ""))
+        path = QFileDialog.getExistingDirectory(self, "选择 ucm-toolkit 源码目录", start)
         if path:
             edit.setText(path)
+            settings.setValue("last_file_dir", path)
 
     def _mode_changed(self) -> None:
         offline = self.offline_radio.isChecked()
@@ -179,15 +211,12 @@ class ImagePage(QWidget):
                 tctx.progress(100, f"{len(refs)} 个镜像")
             return fn
 
-        def on_done(all_ok):
-            try:
-                if all_ok:
-                    self._apply_image_lists()
-            finally:
-                self.panel.finished_all.disconnect(on_done)
+        def on_finished(all_ok: bool) -> None:
+            if all_ok:
+                self._apply_image_lists()
 
-        self.panel.finished_all.connect(on_done)
-        self.panel.start([(s, make_fn(s)) for s in servers], "刷新镜像列表")
+        self.panel.run_tasks([(s, make_fn(s)) for s in servers],
+                             "刷新镜像列表", on_finished=on_finished)
 
     def _apply_image_lists(self) -> None:
         for sid, combo in self.image_rows.items():
@@ -215,10 +244,15 @@ class ImagePage(QWidget):
         if not servers:
             QMessageBox.information(self, "提示", "请先在步骤1选择服务器")
             return
+        from PySide6.QtCore import QSettings
+
+        settings = QSettings("UCM-Deployer", "paths")
+        start = str(settings.value("last_file_dir", ""))
         path, _ = QFileDialog.getOpenFileName(
-            self, "选择镜像 tar 包", "", "镜像包 (*.tar *.tar.gz *.tgz)")
+            self, "选择镜像 tar 包", start, "镜像包 (*.tar *.tar.gz *.tgz)")
         if not path:
             return
+        settings.setValue("last_file_dir", os.path.dirname(path))
 
         def make_fn(path_):
             def fn(ssh, tctx):
@@ -236,16 +270,13 @@ class ImagePage(QWidget):
                         self._image_lists[ssh.server.id].append(r)
             return fn
 
-        def on_done(all_ok):
-            try:
-                if all_ok:
-                    self._apply_image_lists()
-                    QMessageBox.information(self, "完成", "镜像上传并加载完成")
-            finally:
-                self.panel.finished_all.disconnect(on_done)
+        def on_finished(all_ok: bool) -> None:
+            if all_ok:
+                self._apply_image_lists()
+                QMessageBox.information(self, "完成", "镜像上传并加载完成")
 
-        self.panel.finished_all.connect(on_done)
-        self.panel.start([(s, make_fn(path)) for s in servers], "上传镜像")
+        self.panel.run_tasks([(s, make_fn(path)) for s in servers],
+                             "上传镜像", on_finished=on_finished)
 
     def _selected_bases(self) -> Optional[Dict[str, str]]:
         bases = {}
@@ -323,16 +354,11 @@ class ImagePage(QWidget):
                 self.ctx.images[server.id] = result.image
             return fn
 
-        def on_done(all_ok):
-            try:
-                if all_ok:
-                    if server_ids := list(self.ctx.images.keys()):
-                        pass
-                    QMessageBox.information(
-                        self, "构建完成",
-                        f"全部服务器构建完成，镜像: {tag}\n已记录为各服务器使用的 UCM 镜像。")
-            finally:
-                self.panel.finished_all.disconnect(on_done)
+        def on_finished(all_ok: bool) -> None:
+            if all_ok:
+                QMessageBox.information(
+                    self, "构建完成",
+                    f"全部服务器构建完成，镜像: {tag}\n已记录为各服务器使用的 UCM 镜像。")
 
-        self.panel.finished_all.connect(on_done)
-        self.panel.start([(s, make_fn(s)) for s in servers], "构建镜像")
+        self.panel.run_tasks([(s, make_fn(s)) for s in servers],
+                             "构建镜像", on_finished=on_finished)

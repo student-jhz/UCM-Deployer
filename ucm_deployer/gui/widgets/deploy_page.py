@@ -123,6 +123,11 @@ class DeployPage(QWidget):
         pform.addRow("--served-model-name", self.served_edit)
         pform.addRow("UCM 配置文件(容器内)", self.ucm_cfg_edit)
         pform.addRow("kvcache 共享目录", self.kv_dir_edit)
+        self.model_edit.setToolTip("容器内可见的模型目录，如步骤3映射的 /models/Qwen3-32B")
+        self.served_edit.setToolTip("OpenAI API 返回的 model 名称；留空则取模型目录名")
+        self.ucm_cfg_edit.setToolTip("UCM 配置文件路径；将自动生成模板到该路径")
+        self.kv_dir_edit.setToolTip("写入 UCM 配置模板 storage_backends 的共享存储目录")
+        self.nic_edit.setToolTip("HCCL/GLOO 通信网卡名；留空则脚本内自动探测")
         pform.addRow("通信网卡", self.nic_edit)
         prow = QHBoxLayout()
         prow.addWidget(QLabel("服务起始端口"))
@@ -145,6 +150,7 @@ class DeployPage(QWidget):
         self.validate_label = QLabel("—")
         self.validate_label.setWordWrap(True)
         gen_btn = QPushButton("📜 生成部署脚本（可编辑）")
+        gen_btn.setProperty("accent", True)
         gen_btn.clicked.connect(self._generate)
         self.script_tabs = QTabWidget()
         self.script_edits: Dict[str, QPlainTextEdit] = {}
@@ -198,6 +204,9 @@ class DeployPage(QWidget):
             self.ctr_form.addRow(f"{s.name} ({s.host})", combo)
         self._rebuild_node_table()
         self._validate()
+        # 首次进入自动加载容器列表（异步，完成后回填下拉框）
+        if self.ctx.selected and not getattr(self, "_ctr_lists", None):
+            self._refresh_containers()
 
     def _mode_changed(self) -> None:
         self._rebuild_node_table()
@@ -236,8 +245,6 @@ class DeployPage(QWidget):
                 spin.valueChanged.connect(lambda *_: self._validate())
             self.node_table.setCellWidget(row, 3, dp)
             self.node_table.setCellWidget(row, 4, tp)
-            if row == 0:
-                role_cell = self.node_table.cellWidget(row, 2)
         # PD 模式默认第一台为 P，其余为 D；至少保留一台 D
         if pd_mode and self.node_table.rowCount() >= 2:
             w = self.node_table.cellWidget(0, 2)
@@ -272,21 +279,45 @@ class DeployPage(QWidget):
                 tctx.log("\n".join(f"{c.names} [{c.state}] {c.image}" for c in cs))
             return fn
 
-        def on_done(all_ok):
-            try:
-                if all_ok:
-                    lists = getattr(self, "_ctr_lists", {})
-                    for sid, combo in self.ctr_rows.items():
-                        current = combo.currentText()
-                        combo.clear()
-                        combo.addItems(lists.get(sid, []))
-                        if current:
-                            combo.setCurrentText(current)
-            finally:
-                self.panel.finished_all.disconnect(on_done)
+        def on_finished(all_ok: bool) -> None:
+            if not all_ok:
+                return
+            lists = getattr(self, "_ctr_lists", {})
+            for sid, combo in self.ctr_rows.items():
+                current = combo.currentText()
+                combo.clear()
+                combo.addItems(lists.get(sid, []))
+                if current:
+                    combo.setCurrentText(current)
+                elif self.ctx.containers.get(sid) in lists.get(sid, []):
+                    combo.setCurrentText(self.ctx.containers[sid])
+            # 同步节点表中的容器下拉
+            self._sync_node_containers()
 
-        self.panel.finished_all.connect(on_done)
-        self.panel.start([(s, make_fn(s)) for s in self.ctx.selected], "刷新容器")
+        self.panel.run_tasks([(s, make_fn(s)) for s in self.ctx.selected],
+                             "刷新容器", on_finished=on_finished)
+
+    def _sync_node_containers(self) -> None:
+        """把容器下拉的当前选择同步到节点表（并回写 ctx.containers）。"""
+        for sid, combo in self.ctr_rows.items():
+            text = combo.currentText().strip()
+            if text:
+                self.ctx.containers[sid] = text
+        for row in range(self.node_table.rowCount()):
+            if row >= len(self.ctx.selected):
+                break
+            sid = self.ctx.selected[row].id
+            combo = self.node_table.cellWidget(row, 1)
+            if combo is None:
+                continue
+            current = combo.currentText()
+            combo.clear()
+            combo.addItems(getattr(self, "_ctr_lists", {}).get(sid, []))
+            want = self.ctx.containers.get(sid, current)
+            if want:
+                combo.setCurrentText(want)
+            elif current:
+                combo.setCurrentText(current)
 
     def _check_container_ucm(self) -> None:
         def make_fn(server):
@@ -302,7 +333,8 @@ class DeployPage(QWidget):
                 self.ctx.containers[server.id] = name
             return fn
 
-        self.panel.start([(s, make_fn(s)) for s in self.ctx.selected], "检查容器 UCM")
+        self.panel.run_tasks([(s, make_fn(s)) for s in self.ctx.selected],
+                             "检查容器 UCM")
 
     def _check_resources(self) -> None:
         reports: Dict[str, str] = {}
@@ -317,15 +349,13 @@ class DeployPage(QWidget):
                 reports[server.name] = report.message
             return fn
 
-        def on_done(all_ok):
-            try:
-                text = "\n\n".join(f"【{n}】{m}" for n, m in reports.items())
-                QMessageBox.information(self, "卡资源占用检查", text or "无结果")
-            finally:
-                self.panel.finished_all.disconnect(on_done)
+        def on_finished(all_ok: bool) -> None:
+            text = "\n\n".join(f"【{n}】{m}" for n, m in reports.items())
+            if text:
+                QMessageBox.information(self, "卡资源占用检查", text)
 
-        self.panel.finished_all.connect(on_done)
-        self.panel.start([(s, make_fn(s)) for s in self.ctx.selected], "资源检查")
+        self.panel.run_tasks([(s, make_fn(s)) for s in self.ctx.selected],
+                             "资源检查", on_finished=on_finished)
 
     # ------------------------------------------------------------ 校验/生成
     def _collect_nodes(self) -> List[NodePlan]:
@@ -404,34 +434,61 @@ class DeployPage(QWidget):
         if errors:
             QMessageBox.warning(self, "无法生成", "存在校验错误：\n" + "\n".join(errors))
             return
+        # 用户已编辑过脚本时，重新生成前确认（避免静默覆盖）
+        if self._has_edited_scripts():
+            ret = QMessageBox.question(
+                self, "确认重新生成",
+                "当前脚本已被手动编辑，重新生成将覆盖这些修改。\n是否继续？")
+            if ret != QMessageBox.Yes:
+                return
         ds = CommandGenerator(plan).generate()
         self.ctx.scripts = ds
-        # 保留用户已编辑过的同名脚本内容
+        self._original_contents = {}
         self.script_tabs.clear()
         self.script_edits.clear()
         for s in ds.scripts:
             edit = QPlainTextEdit()
+            edit.setProperty("role", "code")
             edit.setFont(QFont("Consolas"))
             edit.setPlainText(s.content)
-            self.script_edits[f"{s.server_name}:{s.name}"] = edit
+            key = f"{s.server_name}:{s.name}"
+            self.script_edits[key] = edit
+            self._original_contents[key] = s.content
             self.script_tabs.addTab(edit, f"{s.server_name}/{s.name}")
         for f in ds.config_files:
             key = f"{f.server_name}:{f.name}"
             if key in self.script_edits:
                 continue
             edit = QPlainTextEdit()
+            edit.setProperty("role", "code")
             edit.setFont(QFont("Consolas"))
             edit.setPlainText(f.content)
             self.script_edits[key] = edit
+            self._original_contents[key] = f.content
             self.script_tabs.addTab(edit, f"{f.server_name}/{f.name} [配置]")
-        # 把用户编辑回写到 scripts（进入步骤5前）
-        for s in list(ds.scripts) + list(ds.config_files):
-            edit = self.script_edits.get(f"{s.server_name}:{s.name}")
-            if edit is not None:
-                s.content = edit.toPlainText()
+        self.sync_edits()
         self._validate()
         QMessageBox.information(
             self, "生成完成",
             f"已生成 {len(ds.scripts)} 个脚本 / {len(ds.config_files)} 个配置文件。\n"
-            "脚本内容可直接编辑，编辑结果在进入步骤5时生效。\n"
+            "脚本内容可直接编辑，编辑结果在进入步骤5时自动生效。\n"
             f"拓扑: {ds.summary}")
+
+    def _has_edited_scripts(self) -> bool:
+        """自上次生成后，脚本编辑框内容是否被修改。"""
+        originals = getattr(self, "_original_contents", None) or {}
+        for key, edit in self.script_edits.items():
+            original = originals.get(key)
+            if original is not None and edit.toPlainText() != original:
+                return True
+        return False
+
+    def sync_edits(self) -> None:
+        """把脚本编辑框的最新内容回写到 ctx.scripts（进入步骤5前调用）。"""
+        ds = self.ctx.scripts
+        if ds is None:
+            return
+        for s in list(ds.scripts) + list(ds.config_files):
+            edit = self.script_edits.get(f"{s.server_name}:{s.name}")
+            if edit is not None:
+                s.content = edit.toPlainText()

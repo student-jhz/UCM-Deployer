@@ -7,7 +7,9 @@ from typing import Callable, Dict, List, Optional, Tuple
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QFont, QTextCursor
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
@@ -18,13 +20,13 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
     QVBoxLayout,
     QWidget,
-    QApplication,
 )
 
 from ...core.models import ServerInfo
@@ -99,7 +101,12 @@ class QuickTask(QThread):
 
 # ============================================================ 并行任务面板
 class ParallelTaskPanel(QWidget):
-    """多服务器并行执行：每服务器一行进度 + 一页日志。"""
+    """多服务器并行执行：每服务器一行进度条 + 一页日志。
+
+    用法（推荐）：
+        panel.run_tasks(tasks, "标题", on_finished=lambda all_ok: ...)
+    on_finished 由面板内部一次性连接，任务被拒（忙碌）时不会残留。
+    """
 
     finished_all = Signal(bool)
 
@@ -107,6 +114,9 @@ class ParallelTaskPanel(QWidget):
         super().__init__(parent)
         self._threads: List[ServerTaskThread] = []
         self._results: Dict[str, Tuple[bool, str]] = {}
+        self._total = 0
+        self._logs: Dict[str, QPlainTextEdit] = {}
+        self._bars: Dict[str, QProgressBar] = {}
 
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["服务器", "进度", "状态"])
@@ -115,13 +125,17 @@ class ParallelTaskPanel(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
 
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
 
         self.cancel_btn = QPushButton("取消")
         self.cancel_btn.clicked.connect(self._cancel)
+        self.title_label = QLabel("")
+        self.title_label.setStyleSheet("color:#64748b;")
         top = QHBoxLayout()
+        top.addWidget(self.title_label)
         top.addStretch(1)
         top.addWidget(self.cancel_btn)
 
@@ -132,30 +146,47 @@ class ParallelTaskPanel(QWidget):
 
     # ------------------------------------------------------------ API
     def is_running(self) -> bool:
-        return bool(self._threads)
+        return self._total > len(self._results)
 
     def start(self, tasks: List[Tuple[ServerInfo, Callable]],
-              title: str = "执行任务") -> None:
+              title: str = "执行任务") -> bool:
+        """启动并行任务；忙碌时提示并返回 False。"""
         if self.is_running():
             QMessageBox.warning(self, "忙碌", "有任务正在执行，请等待完成或取消")
-            return
-        self._results = {}
+            return False
+        # 清理上一轮已结束的线程（此时均已结束，可安全释放）
+        for t in self._threads:
+            try:
+                t.deleteLater()
+            except RuntimeError:
+                pass
         self._threads = []
+        self._results = {}
+        self._total = len(tasks)
+        self._logs = {}
+        self._bars = {}
+        self.title_label.setText(title if title else "")
         self.table.setRowCount(0)
         while self.tabs.count():
             self.tabs.removeTab(0)
-        self._logs: Dict[str, QPlainTextEdit] = {}
 
         for server, fn in tasks:
             row = self.table.rowCount()
             self.table.insertRow(row)
             self.table.setItem(row, 0, QTableWidgetItem(f"{server.name} ({server.host})"))
+            bar = QProgressBar()
+            bar.setRange(0, 100)
+            bar.setValue(0)
+            bar.setFormat("等待中")
+            self.table.setCellWidget(row, 1, bar)
+            self._bars[server.id] = bar
             status = QTableWidgetItem("排队中")
             status.setForeground(Qt.gray)
             self.table.setItem(row, 2, status)
             edit = QPlainTextEdit()
             edit.setReadOnly(True)
             edit.setMaximumBlockCount(5000)
+            edit.setProperty("role", "code")
             font = QFont("Consolas")
             font.setStyleHint(QFont.Monospace)
             edit.setFont(font)
@@ -168,10 +199,43 @@ class ParallelTaskPanel(QWidget):
             thread.sig_done.connect(self._on_done)
             self._threads.append(thread)
 
-        self.cancel_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(bool(tasks))
         for t in self._threads:
             t.start()
+        return True
 
+    def run_tasks(self, tasks: List[Tuple[ServerInfo, Callable]],
+                  title: str = "执行任务",
+                  on_finished: Optional[Callable[[bool], None]] = None) -> bool:
+        """start() + 一次性 on_finished 回调（面板内部管理连接，无残留）。"""
+        if self.is_running():
+            QMessageBox.warning(self, "忙碌", "有任务正在执行，请等待完成或取消")
+            return False
+
+        def handler(all_ok: bool) -> None:
+            try:
+                if on_finished is not None:
+                    on_finished(all_ok)
+            finally:
+                try:
+                    self.finished_all.disconnect(handler)
+                except (RuntimeError, TypeError):
+                    pass
+
+        if on_finished is not None:
+            self.finished_all.connect(handler)
+        return self.start(tasks, title)
+
+    def shutdown(self, timeout_ms: int = 2000) -> None:
+        """请求取消并等待线程结束（关闭窗口时使用，避免 QThread 析构崩溃）。"""
+        for t in self._threads:
+            t.request_cancel()
+        for t in self._threads:
+            if not t.wait(timeout_ms):
+                t.terminate()
+                t.wait(1000)
+
+    # ------------------------------------------------------------ 内部
     def _cancel(self) -> None:
         for t in self._threads:
             t.request_cancel()
@@ -185,9 +249,10 @@ class ParallelTaskPanel(QWidget):
         return -1
 
     def _on_progress(self, server_id: str, pct: int, msg: str) -> None:
-        row = self._row_of(server_id)
-        if row >= 0:
-            self.table.setItem(row, 1, QTableWidgetItem(f"{pct}%  {msg}"))
+        bar = self._bars.get(server_id)
+        if bar is not None:
+            bar.setValue(max(0, min(100, int(pct))))
+            bar.setFormat(f"{pct}%  {msg}" if msg else f"{pct}%")
 
     def _on_log(self, server_id: str, line: str) -> None:
         edit = self._logs.get(server_id)
@@ -210,23 +275,25 @@ class ParallelTaskPanel(QWidget):
                 self.table.setItem(row, 2, item)
             item.setText(("✓ " if ok else "✗ ") + message)
             item.setForeground(Qt.darkGreen if ok else Qt.red)
-        if len(self._results) == len(self._threads):
+        if self._total and len(self._results) >= self._total:
             self.cancel_btn.setEnabled(False)
             all_ok = all(ok for ok, _ in self._results.values())
             self.finished_all.emit(all_ok)
-            self._threads = []
 
 
 # ============================================================ 远端目录选择
 class RemoteDirDialog(QDialog):
-    """浏览远端服务器目录（下拉框数据源）。lister(path)->[dirs]"""
+    """浏览远端服务器目录。
 
-    def __init__(self, parent, lister: Callable[[str], List[str]],
+    listers: {服务器显示名: lister(path)->[子目录列表]}，多台服务器时提供切换下拉。
+    """
+
+    def __init__(self, parent, listers: Dict[str, Callable[[str], List[str]]],
                  start: str = "/", title: str = "选择服务器目录"):
         super().__init__(parent)
         self.setWindowTitle(title)
-        self.resize(520, 420)
-        self._lister = lister
+        self.resize(540, 440)
+        self._listers = listers
         self._selected: Optional[str] = None
 
         self.path_edit = QLineEdit(start)
@@ -234,6 +301,12 @@ class RemoteDirDialog(QDialog):
         refresh_btn = QPushButton("刷新")
         up_btn.clicked.connect(self._up)
         refresh_btn.clicked.connect(self._load)
+
+        self.server_combo: Optional[QComboBox] = None
+        if len(listers) > 1:
+            self.server_combo = QComboBox()
+            self.server_combo.addItems(list(listers.keys()))
+            self.server_combo.currentTextChanged.connect(lambda _: self._load())
 
         self.listw = QListWidget()
         self.listw.itemDoubleClicked.connect(self._enter)
@@ -243,22 +316,30 @@ class RemoteDirDialog(QDialog):
         self.buttons.rejected.connect(self.reject)
 
         layout = QVBoxLayout(self)
-        row = QHBoxLayout()
-        row.addWidget(self.path_edit, 1)
-        row.addWidget(up_btn)
-        row.addWidget(refresh_btn)
-        layout.addLayout(row)
+        top = QHBoxLayout()
+        if self.server_combo is not None:
+            top.addWidget(QLabel("服务器"))
+            top.addWidget(self.server_combo)
+        top.addWidget(self.path_edit, 1)
+        top.addWidget(up_btn)
+        top.addWidget(refresh_btn)
+        layout.addLayout(top)
         layout.addWidget(self.listw, 1)
         layout.addWidget(QLabel("双击进入子目录；「确定」使用当前路径"))
         layout.addWidget(self.buttons)
         self._load()
+
+    def _current_lister(self) -> Callable[[str], List[str]]:
+        if self.server_combo is not None:
+            return self._listers[self.server_combo.currentText()]
+        return next(iter(self._listers.values()))
 
     def _load(self) -> None:
         path = self.path_edit.text().strip() or "/"
         self.listw.clear()
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            dirs = self._lister(path)
+            dirs = self._current_lister()(path)
         except Exception as exc:
             QApplication.restoreOverrideCursor()
             QMessageBox.warning(self, "读取失败", f"无法列出 {path}:\n{exc}")
@@ -276,7 +357,7 @@ class RemoteDirDialog(QDialog):
 
     def _up(self) -> None:
         path = self.path_edit.text().strip().rstrip("/")
-        if "/" in path[1:]:
+        if path.startswith("/") and "/" in path[1:]:
             self.path_edit.setText(path.rsplit("/", 1)[0] or "/")
         else:
             self.path_edit.setText("/")
@@ -298,12 +379,13 @@ class LogViewDialog(QDialog):
                  lines: int = 300):
         super().__init__(parent)
         self.setWindowTitle(title)
-        self.resize(760, 520)
+        self.resize(780, 540)
         self._loader = loader
         self._lines = lines
 
         self.edit = QPlainTextEdit()
         self.edit.setReadOnly(True)
+        self.edit.setProperty("role", "code")
         font = QFont("Consolas")
         font.setStyleHint(QFont.Monospace)
         self.edit.setFont(font)

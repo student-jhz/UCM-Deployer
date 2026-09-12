@@ -142,6 +142,158 @@ def _wait_panel(panel, qapp, timeout=60):
     return not panel.is_running()
 
 
+def test_parallel_panel_run_tasks_one_shot(qapp, tmp_path):
+    """run_tasks 一次性回调：不残留、忙碌时拒绝且不排入回调。"""
+    from ucm_deployer.core.models import ServerInfo
+    from ucm_deployer.gui.widgets.common import ParallelTaskPanel
+    from ucm_deployer.mock.mock_server import MockSSHServer
+
+    server = MockSSHServer(device="ascend", cards=2, root_dir=str(tmp_path / "r"))
+    port = server.start()
+    try:
+        info = ServerInfo.create(name="m", host="127.0.0.1", port=port,
+                                 username="root", password="root")
+        panel = ParallelTaskPanel()
+        calls = []
+
+        def fn(ssh, tctx):
+            tctx.log("hi")
+            tctx.progress(50, "half")
+
+        assert panel.run_tasks([(info, fn)], "测试",
+                               on_finished=lambda all_ok: calls.append(all_ok)) is True
+        assert _wait_panel(panel, qapp)
+        assert calls == [True]
+
+        # 忙碌时拒绝：回调不会被排入
+        import time as _t
+
+        def slow(ssh, tctx):
+            _t.sleep(0.6)
+
+        assert panel.run_tasks([(info, slow)], "忙碌") is True
+        rejected_calls = []
+        assert panel.run_tasks([(info, fn)], "应被拒绝",
+                               on_finished=lambda ok: rejected_calls.append(ok)) is False
+        assert _wait_panel(panel, qapp)
+        assert rejected_calls == []  # 被拒任务的回调不应触发
+
+        # 完成后可再次运行，回调正常（验证无残留误触发）
+        assert panel.run_tasks([(info, fn)], "再跑一次",
+                               on_finished=lambda all_ok: calls.append(all_ok)) is True
+        assert _wait_panel(panel, qapp)
+        assert calls == [True, True]
+    finally:
+        server.stop()
+
+
+def test_container_page_per_server_commands(qapp, tmp_path):
+    """多服务器时每台服务器有独立命令页签，编辑互不影响。"""
+    from PySide6.QtCore import Qt
+
+    from ucm_deployer.core.models import (DeviceInfo, DeviceType, ServerInfo)
+    from ucm_deployer.core.server_registry import ServerRegistry
+    from ucm_deployer.gui.state import AppContext
+    from ucm_deployer.gui.widgets.container_page import ContainerPage
+
+    ctx = AppContext(ServerRegistry(tmp_path))
+    s1 = ServerInfo.create(name="n1", host="10.0.0.1")
+    s2 = ServerInfo.create(name="n2", host="10.0.0.2")
+    ctx.selected = [s1, s2]
+    ctx.devices = {
+        s1.id: DeviceInfo(DeviceType.ASCEND, "Ascend 910B3", 8),
+        s2.id: DeviceInfo(DeviceType.ASCEND, "Ascend 910B3", 16),  # 卡数不同
+    }
+    ctx.images = {s1.id: "img:t1", s2.id: "img:t2"}
+
+    page = ContainerPage(ctx)
+    page.on_enter()
+    qapp.processEvents()
+    page._regen()
+    qapp.processEvents()
+
+    assert set(page.cmd_edits.keys()) == {s1.id, s2.id}
+    cmd1 = page.command_text(s1.id)
+    cmd2 = page.command_text(s2.id)
+    assert "--device /dev/davinci7" in cmd1
+    assert "--device /dev/davinci15" in cmd2   # 16 卡全量映射
+    assert cmd1 != cmd2
+
+    # 编辑服务器1的命令不影响服务器2
+    page.cmd_edits[s1.id].setPlainText("docker run -itd --name edited img:t1 bash")
+    assert page.command_text(s2.id) == cmd2
+    assert page.command_text(s1.id).startswith("docker run -itd --name edited")
+
+
+def test_deploy_page_regen_confirm(qapp, tmp_path):
+    """脚本被编辑后重新生成需要确认：No 保留编辑，Yes 覆盖。"""
+    from PySide6.QtWidgets import QMessageBox
+
+    from ucm_deployer.core.models import DeviceInfo, DeviceType, ServerInfo
+    from ucm_deployer.core.server_registry import ServerRegistry
+    from ucm_deployer.gui.state import AppContext
+    from ucm_deployer.gui.widgets.deploy_page import DeployPage
+
+    ctx = AppContext(ServerRegistry(tmp_path))
+    s1 = ServerInfo.create(name="n1", host="10.0.0.1")
+    ctx.selected = [s1]
+    ctx.devices = {s1.id: DeviceInfo(DeviceType.ASCEND, "Ascend 910B3", 8)}
+    ctx.containers = {s1.id: "c1"}
+    page = DeployPage(ctx)
+    page.on_enter()
+    page.model_edit.setText("/models/m")
+    qapp.processEvents()
+    page._generate()
+    qapp.processEvents()
+    assert ctx.scripts is not None
+
+    first_key = next(iter(page.script_edits))
+    page.script_edits[first_key].setPlainText("# edited by user\n")
+
+    # 用户选择 No -> 不覆盖
+    orig = QMessageBox.question
+    QMessageBox.question = staticmethod(
+        lambda *a, **k: QMessageBox.StandardButton.No)
+    try:
+        page._generate()
+    finally:
+        QMessageBox.question = orig
+    qapp.processEvents()
+    assert page.script_edits[first_key].toPlainText() == "# edited by user\n"
+
+    # 用户选择 Yes（默认自动应答）-> 覆盖
+    page._generate()
+    qapp.processEvents()
+    assert page.script_edits[first_key].toPlainText() != "# edited by user\n"
+
+
+def test_deploy_page_sync_edits(qapp, tmp_path):
+    """生成后继续编辑，sync_edits 应把最新内容写回 ctx.scripts。"""
+    from ucm_deployer.core.models import DeviceInfo, DeviceType, ServerInfo
+    from ucm_deployer.core.server_registry import ServerRegistry
+    from ucm_deployer.gui.state import AppContext
+    from ucm_deployer.gui.widgets.deploy_page import DeployPage
+
+    ctx = AppContext(ServerRegistry(tmp_path))
+    s1 = ServerInfo.create(name="n1", host="10.0.0.1")
+    ctx.selected = [s1]
+    ctx.devices = {s1.id: DeviceInfo(DeviceType.ASCEND, "Ascend 910B3", 8)}
+    ctx.containers = {s1.id: "c1"}
+    page = DeployPage(ctx)
+    page.on_enter()
+    page.model_edit.setText("/models/m")
+    qapp.processEvents()
+    page._generate()
+    qapp.processEvents()
+
+    first = ctx.scripts.scripts[0]
+    page.script_edits[f"{first.server_name}:{first.name}"].setPlainText(
+        "# user edited content\n")
+    assert ctx.scripts.scripts[0].content != "# user edited content\n"
+    page.sync_edits()
+    assert ctx.scripts.scripts[0].content == "# user edited content\n"
+
+
 def test_gui_with_mock_server_flow(qapp, tmp_path):
     """GUI 页面 + ParallelTaskPanel 真实线程 + 模拟服务器全链路。"""
     import os
@@ -197,12 +349,13 @@ def test_gui_with_mock_server_flow(qapp, tmp_path):
         # ---- 步骤3: 生成命令 + 创建容器 + 检查 UCM
         cp = ContainerPage(ctx)
         cp.on_enter()
+        assert _wait_panel(cp.panel, qapp), "进入页面自动刷新镜像超时"
         cp.kv_add_row.edit.setText("/mnt/nfs_share")
         cp._kv_add()
         cp.model_host.edit.setText("/models/Qwen3-32B")
         qapp.processEvents()
         cp._regen()
-        cmd = cp.cmd_edit.toPlainText()
+        cmd = cp.command_text(info.id)
         assert cmd.startswith("docker run -itd")
         assert "--device /dev/davinci7" in cmd
         assert "-v /mnt/nfs_share:/mnt/nfs_share" in cmd

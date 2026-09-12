@@ -20,16 +20,16 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
-    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from ...core.container_manager import (ContainerCreateConfig,
-                                       ContainerManager, check_shared_fs)
-from ...core.device_detector import DeviceType
+                                       ContainerManager, check_shared_fs,
+                                       evaluate_shared_fs)
 from ...core.docker_manager import DockerManager
 from ...core.models import VolumeMount
 from ...core.ssh_client import SSHClient
@@ -38,7 +38,7 @@ from .common import ParallelTaskPanel, RemoteDirDialog
 
 
 class _PathPickRow(QWidget):
-    """路径输入 + 浏览(远端目录) + 手动"""
+    """路径输入 + 浏览(远端目录, 多服务器可选) """
 
     def __init__(self, page: "ContainerPage", placeholder: str = "/mnt/..."):
         super().__init__()
@@ -53,17 +53,20 @@ class _PathPickRow(QWidget):
         layout.addWidget(browse)
 
     def _browse(self) -> None:
-        server = self.page.current_server()
-        if server is None:
-            QMessageBox.information(self, "提示", "没有可用的服务器（请先在步骤1选择）")
+        servers = self.page.ctx.selected
+        if not servers:
+            QMessageBox.information(self, "提示", "请先在步骤1选择服务器")
             return
 
-        def lister(path: str) -> List[str]:
-            with SSHClient(server) as ssh:
-                return ContainerManager(ssh).list_host_dirs(path)
+        def make_lister(server):
+            def lister(path: str) -> List[str]:
+                with SSHClient(server) as ssh:
+                    return ContainerManager(ssh).list_host_dirs(path)
+            return lister
 
+        listers = {f"{s.name} ({s.host})": make_lister(s) for s in servers}
         start = self.edit.text().strip() or "/"
-        dlg = RemoteDirDialog(self, lister, start=start)
+        dlg = RemoteDirDialog(self, listers, start=start)
         if dlg.exec() == QDialog.Accepted and dlg.selected_path():
             self.edit.setText(dlg.selected_path())
 
@@ -80,10 +83,13 @@ class ContainerPage(QWidget):
         top_box = QGroupBox("1. UCM 镜像与容器")
         self.image_rows: Dict[str, QComboBox] = {}
         self.image_form = QFormLayout()
-        refresh_img_btn = QPushButton("🔄 刷新镜像")
-        check_img_btn = QPushButton("✅ 检查镜像内 UCM")
-        refresh_img_btn.clicked.connect(self._refresh_images)
-        check_img_btn.clicked.connect(self._check_image_ucm)
+        self.placeholder = QLabel("请先在「1. 服务器管理」勾选要部署的服务器")
+        self.placeholder.setProperty("role", "hint")
+        self.placeholder.setAlignment(Qt.AlignCenter)
+        self.placeholder.setMinimumHeight(40)
+        top_box.setLayout(QVBoxLayout())
+        top_box.layout().addWidget(self.placeholder)
+        top_box.layout().addLayout(self.image_form)
         self.name_edit = QLineEdit("ucm-vllm")
         self.shm_edit = QLineEdit("512g")
         self.net_edit = QLineEdit("host")
@@ -91,13 +97,9 @@ class ContainerPage(QWidget):
         form.addRow("容器名", self.name_edit)
         form.addRow("shm-size", self.shm_edit)
         form.addRow("网络", self.net_edit)
-        top_box.setLayout(self.image_form)
         inner = QHBoxLayout()
         inner.addLayout(form)
         inner.addStretch(1)
-        col = QVBoxLayout(top_box)
-        col.addLayout(self.image_form)
-        col.addLayout(inner)
 
         # ---------- kvcache 挂载
         kv_box = QGroupBox("2. UCM kvcache 持久化挂载目录（多目录须同一共享文件系统）")
@@ -118,6 +120,7 @@ class ContainerPage(QWidget):
         self.kv_hint = QLabel(
             "⚠ 多个挂载目录必须位于同一共享文件系统；跨服务器共用时必须是 NFS/3FS 等网络存储。\n"
             "⚠ 只有「同一种模型 + 同一种部署模式(P节点数、DP/TP 一致)」的服务才能共用同一套挂载目录。")
+        self.kv_hint.setProperty("role", "hint")
         self.kv_hint.setWordWrap(True)
         kv_layout = QVBoxLayout(kv_box)
         kv_layout.addLayout(row)
@@ -158,27 +161,43 @@ class ContainerPage(QWidget):
         ex_layout.addWidget(self.extra_table, 1)
         ex_layout.addLayout(ex_row)
 
-        # ---------- 命令预览
+        # ---------- 命令预览（每服务器一页，可分别编辑）
         cmd_box = QGroupBox("4. docker run 命令（自动生成，可编辑）")
-        self.cmd_edit = QPlainTextEdit()
-        self.cmd_edit.setFont(QFont("Consolas"))
-        self.cmd_edit.setPlaceholderText("点击「生成/刷新命令」预览 docker run 命令")
+        self.cmd_tabs = QTabWidget()
+        self.cmd_edits: Dict[str, QPlainTextEdit] = {}
         regen_btn = QPushButton("🔁 生成/刷新命令")
         regen_btn.clicked.connect(self._regen)
         create_btn = QPushButton("🚀 创建容器（全部服务器）")
+        create_btn.setProperty("accent", True)
         create_btn.clicked.connect(self._create)
         check_ctr_btn = QPushButton("✅ 检查容器内 UCM")
         check_ctr_btn.clicked.connect(self._check_container_ucm)
+        self.cmd_hint = QLabel(
+            "每台服务器一个命令页（卡数/镜像可能不同），可分别编辑；创建时按各页内容执行。")
+        self.cmd_hint.setProperty("role", "hint")
         btns = QHBoxLayout()
         btns.addWidget(regen_btn)
         btns.addWidget(create_btn)
         btns.addWidget(check_ctr_btn)
         btns.addStretch(1)
         cmd_layout = QVBoxLayout(cmd_box)
-        cmd_layout.addWidget(self.cmd_edit)
+        cmd_layout.addWidget(self.cmd_tabs)
+        cmd_layout.addWidget(self.cmd_hint)
         cmd_layout.addLayout(btns)
 
         self.panel = ParallelTaskPanel()
+
+        # 顶部工具行
+        refresh_img_btn = QPushButton("🔄 刷新镜像")
+        check_img_btn = QPushButton("✅ 检查镜像内 UCM")
+        top_row = QHBoxLayout()
+        top_row.addWidget(refresh_img_btn)
+        top_row.addWidget(check_img_btn)
+        top_row.addStretch(1)
+        refresh_img_btn.clicked.connect(self._refresh_images)
+        check_img_btn.clicked.connect(self._check_image_ucm)
+        top_box.layout().addLayout(top_row)
+        top_box.layout().addLayout(inner)
 
         layout = QVBoxLayout(self)
         layout.addWidget(top_box)
@@ -197,6 +216,7 @@ class ContainerPage(QWidget):
             if item.widget() is not None:
                 item.widget().deleteLater()
         self.image_rows.clear()
+        self.placeholder.setVisible(not self.ctx.selected)
         for s in self.ctx.selected:
             combo = QComboBox()
             combo.setEditable(True)
@@ -206,125 +226,11 @@ class ContainerPage(QWidget):
                 combo.addItem(current)
             self.image_rows[s.id] = combo
             self.image_form.addRow(f"{s.name} ({s.host})", combo)
-        if not self.cmd_edit.toPlainText().strip():
-            self._regen()
+        self._rebuild_cmd_tabs()
+        if self.ctx.selected and not getattr(self, "_image_refs", None):
+            self._refresh_images()
 
-    def _kv_add(self) -> None:
-        path = self.kv_add_row.text()
-        if not path.startswith("/"):
-            QMessageBox.warning(self, "参数错误", "请输入以 / 开头的绝对路径")
-            return
-        if path not in [self.kv_list.item(i).text() for i in range(self.kv_list.count())]:
-            self.kv_list.addItem(path)
-
-    def _kv_del(self) -> None:
-        item = self.kv_list.currentItem()
-        if item is not None:
-            self.kv_list.takeItem(self.kv_list.row(item))
-
-    def _kv_check(self) -> None:
-        dirs = [self.kv_list.item(i).text() for i in range(self.kv_list.count())]
-        if not dirs:
-            QMessageBox.information(self, "提示", "请先添加 kvcache 挂载目录")
-            return
-        servers = self.ctx.selected
-        if not servers:
-            return
-
-        def make_fn(server):
-            def fn(ssh, tctx):
-                tctx.progress(50, "df 检查中")
-                report = check_shared_fs({server.name: ssh}, dirs)
-                for line in report.message.split("；"):
-                    tctx.log(f"[{server.name}] {line}")
-                self._reports[server.name] = report
-                tctx.progress(100, "完成")
-            return fn
-
-        self._reports: Dict[str, object] = {}
-
-        def on_done(all_ok):
-            try:
-                # 汇总跨服务器判断：用各服务器 entries 重新评估
-                from ...core.container_manager import evaluate_shared_fs
-                entries = []
-                for rep in self._reports.values():
-                    entries.extend(rep.entries)
-                if entries:
-                    merged = evaluate_shared_fs(entries)
-                    icon = QMessageBox.Information if merged.ok else QMessageBox.Warning
-                    box = QMessageBox(icon, "共享文件系统校验", merged.message
-                                      + ("\n\n" + "\n".join(merged.warnings)
-                                         if merged.warnings else ""))
-                    box.exec()
-            finally:
-                self.panel.finished_all.disconnect(on_done)
-
-        self.panel.finished_all.connect(on_done)
-        self.panel.start([(s, make_fn(s)) for s in servers], "共享FS校验")
-
-    def _extra_add(self) -> None:
-        row = self.extra_table.rowCount()
-        self.extra_table.insertRow(row)
-        self.extra_table.setItem(row, 0, QTableWidgetItem("/host/path"))
-        self.extra_table.setItem(row, 1, QTableWidgetItem("/container/path"))
-        ro = QTableWidgetItem()
-        ro.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
-        ro.setCheckState(Qt.Unchecked)
-        self.extra_table.setItem(row, 2, ro)
-
-    def _extra_del(self) -> None:
-        row = self.extra_table.currentRow()
-        if row >= 0:
-            self.extra_table.removeRow(row)
-
-    def _refresh_images(self) -> None:
-        def make_fn(server):
-            def fn(ssh, tctx):
-                dm = DockerManager(ssh)
-                refs = [im.ref for im in dm.list_images()]
-                tctx.log("\n".join(refs))
-                self._image_refs = getattr(self, "_image_refs", {})
-                self._image_refs[server.id] = refs
-            return fn
-
-        def on_done(all_ok):
-            try:
-                if all_ok:
-                    refs_map = getattr(self, "_image_refs", {})
-                    for sid, combo in self.image_rows.items():
-                        current = combo.currentText()
-                        combo.clear()
-                        refs = sorted(refs_map.get(sid, []),
-                                       key=lambda r: "ucm" not in r.lower())
-                        combo.addItems(refs)
-                        if current:
-                            combo.setCurrentText(current)
-                        elif self.ctx.images.get(sid) in refs:
-                            combo.setCurrentText(self.ctx.images[sid])
-            finally:
-                self.panel.finished_all.disconnect(on_done)
-
-        self.panel.finished_all.connect(on_done)
-        self.panel.start([(s, make_fn(s)) for s in self.ctx.selected], "刷新镜像")
-
-    def _check_image_ucm(self) -> None:
-        def make_fn(server):
-            def fn(ssh, tctx):
-                combo = self.image_rows.get(server.id)
-                ref = combo.currentText().strip() if combo else ""
-                if not ref:
-                    raise RuntimeError("未选择镜像")
-                ucm = DockerManager(ssh).image_ucm_info(ref)
-                tctx.log(f"{ref}: {ucm}")
-                if not ucm.installed:
-                    raise RuntimeError(f"镜像 {ref} 未安装 UCM，请回到步骤2构建")
-                self.ctx.images[server.id] = ref
-            return fn
-
-        self.panel.start([(s, make_fn(s)) for s in self.ctx.selected], "检查镜像 UCM")
-
-    # ------------------------------------------------------------ 命令
+    # ------------------------------------------------------------ 命令生成
     def _build_config(self, server) -> ContainerCreateConfig:
         model_mount = None
         if self.model_host.text():
@@ -351,35 +257,172 @@ class ContainerPage(QWidget):
             kv_cache_dirs=kv_dirs, model_mount=model_mount,
             extra_mounts=extra_mounts)
 
+    def _rebuild_cmd_tabs(self) -> None:
+        """按已选服务器重建命令页签（保留已编辑内容）。"""
+        old_texts = {sid: e.toPlainText()
+                     for sid, e in self.cmd_edits.items()}
+        self.cmd_tabs.clear()
+        self.cmd_edits.clear()
+        for s in self.ctx.selected:
+            edit = QPlainTextEdit()
+            edit.setProperty("role", "code")
+            font = QFont("Consolas")
+            font.setStyleHint(QFont.Monospace)
+            edit.setFont(font)
+            edit.setPlaceholderText("点击「生成/刷新命令」生成 docker run 命令")
+            if s.id in old_texts and old_texts[s.id].strip():
+                edit.setPlainText(old_texts[s.id])
+            self.cmd_edits[s.id] = edit
+            self.cmd_tabs.addTab(edit, s.name)
+
     def _regen(self) -> None:
-        server = self.current_server()
-        if server is None:
+        if not self.ctx.selected:
             QMessageBox.information(self, "提示", "请先在步骤1选择服务器")
             return
-        try:
-            cfg = self._build_config(server)
-            cmd = ContainerManager.generate_run_command(cfg)
-        except Exception as exc:
-            QMessageBox.warning(self, "生成失败", str(exc))
-            return
-        self.cmd_edit.setPlainText(cmd)
+        self._rebuild_cmd_tabs()
+        for s in self.ctx.selected:
+            try:
+                cfg = self._build_config(s)
+                cmd = ContainerManager.generate_run_command(cfg)
+            except Exception as exc:
+                QMessageBox.warning(self, "生成失败", f"{s.name}: {exc}")
+                return
+            self.cmd_edits[s.id].setPlainText(cmd)
 
-    def _create(self) -> None:
+    def command_text(self, server_id: str) -> str:
+        edit = self.cmd_edits.get(server_id)
+        return edit.toPlainText() if edit is not None else ""
+
+    # ------------------------------------------------------------ kvcache
+    def _kv_add(self) -> None:
+        path = self.kv_add_row.text()
+        if not path.startswith("/"):
+            QMessageBox.warning(self, "参数错误", "请输入以 / 开头的绝对路径")
+            return
+        if path not in [self.kv_list.item(i).text() for i in range(self.kv_list.count())]:
+            self.kv_list.addItem(path)
+
+    def _kv_del(self) -> None:
+        item = self.kv_list.currentItem()
+        if item is not None:
+            self.kv_list.takeItem(self.kv_list.row(item))
+
+    def _kv_check(self) -> None:
+        dirs = [self.kv_list.item(i).text() for i in range(self.kv_list.count())]
+        if not dirs:
+            QMessageBox.information(self, "提示", "请先添加 kvcache 挂载目录")
+            return
         servers = self.ctx.selected
         if not servers:
             return
-        commands = {}
-        try:
-            for s in servers:
-                cfg = self._build_config(s)
-                commands[s.id] = ContainerManager.generate_run_command(cfg)
-        except Exception as exc:
-            QMessageBox.warning(self, "参数错误", str(exc))
+        reports: Dict[str, object] = {}
+
+        def make_fn(server):
+            def fn(ssh, tctx):
+                tctx.progress(50, "df 检查中")
+                report = check_shared_fs({server.id: ssh}, dirs)
+                for e in report.entries:
+                    tctx.log(f"[{server.name}] {e.path} -> {e.source} ({e.fstype})"
+                             if not e.error else f"[{server.name}] {e.path} {e.error}")
+                reports[server.id] = report
+                tctx.progress(100, "完成")
+            return fn
+
+        def on_finished(all_ok: bool) -> None:
+            if not reports:
+                return
+            entries = []
+            for rep in reports.values():
+                entries.extend(rep.entries)
+            merged = evaluate_shared_fs(entries)
+            icon = QMessageBox.Information if merged.ok else QMessageBox.Warning
+            box = QMessageBox(icon, "共享文件系统校验",
+                              merged.message
+                              + ("\n\n" + "\n".join(merged.warnings)
+                                 if merged.warnings else ""))
+            box.exec()
+
+        self.panel.run_tasks([(s, make_fn(s)) for s in servers],
+                             "共享FS校验", on_finished=on_finished)
+
+    def _extra_add(self) -> None:
+        row = self.extra_table.rowCount()
+        self.extra_table.insertRow(row)
+        self.extra_table.setItem(row, 0, QTableWidgetItem("/host/path"))
+        self.extra_table.setItem(row, 1, QTableWidgetItem("/container/path"))
+        ro = QTableWidgetItem()
+        ro.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+        ro.setCheckState(Qt.Unchecked)
+        self.extra_table.setItem(row, 2, ro)
+
+    def _extra_del(self) -> None:
+        row = self.extra_table.currentRow()
+        if row >= 0:
+            self.extra_table.removeRow(row)
+
+    # ------------------------------------------------------------ 镜像操作
+    def _refresh_images(self) -> None:
+        def make_fn(server):
+            def fn(ssh, tctx):
+                dm = DockerManager(ssh)
+                refs = [im.ref for im in dm.list_images()]
+                tctx.log("\n".join(refs))
+                self._image_refs = getattr(self, "_image_refs", {})
+                self._image_refs[server.id] = refs
+            return fn
+
+        def on_finished(all_ok: bool) -> None:
+            if not all_ok:
+                return
+            refs_map = getattr(self, "_image_refs", {})
+            for sid, combo in self.image_rows.items():
+                current = combo.currentText()
+                combo.clear()
+                refs = sorted(refs_map.get(sid, []),
+                               key=lambda r: "ucm" not in r.lower())
+                combo.addItems(refs)
+                if current:
+                    combo.setCurrentText(current)
+                elif self.ctx.images.get(sid) in refs:
+                    combo.setCurrentText(self.ctx.images[sid])
+
+        self.panel.run_tasks([(s, make_fn(s)) for s in self.ctx.selected],
+                             "刷新镜像", on_finished=on_finished)
+
+    def _check_image_ucm(self) -> None:
+        def make_fn(server):
+            def fn(ssh, tctx):
+                combo = self.image_rows.get(server.id)
+                ref = combo.currentText().strip() if combo else ""
+                if not ref:
+                    raise RuntimeError("未选择镜像")
+                ucm = DockerManager(ssh).image_ucm_info(ref)
+                tctx.log(f"{ref}: {ucm}")
+                if not ucm.installed:
+                    raise RuntimeError(f"镜像 {ref} 未安装 UCM，请回到步骤2构建")
+                self.ctx.images[server.id] = ref
+            return fn
+
+        self.panel.run_tasks([(s, make_fn(s)) for s in self.ctx.selected],
+                             "检查镜像 UCM")
+
+    # ------------------------------------------------------------ 创建
+    def _create(self) -> None:
+        servers = self.ctx.selected
+        if not servers:
+            QMessageBox.information(self, "提示", "请先在步骤1选择服务器")
             return
-        if self.cmd_edit.toPlainText().strip():
-            # 用户可能只编辑了第一台的命令：对单服务器场景采用编辑后的命令
-            if len(servers) == 1:
-                commands[servers[0].id] = self.cmd_edit.toPlainText()
+        commands: Dict[str, str] = {}
+        for s in servers:
+            text = self.command_text(s.id)
+            if not text.strip():
+                try:
+                    text = ContainerManager.generate_run_command(self._build_config(s))
+                    self.cmd_edits[s.id].setPlainText(text)
+                except Exception as exc:
+                    QMessageBox.warning(self, "参数错误", f"{s.name}: {exc}")
+                    return
+            commands[s.id] = text
 
         def make_fn(server):
             cmd = commands[server.id]
@@ -394,18 +437,15 @@ class ContainerPage(QWidget):
                 tctx.progress(100, f"容器 {name} 已创建")
             return fn
 
-        def on_done(all_ok):
-            try:
-                if all_ok:
-                    QMessageBox.information(
-                        self, "完成",
-                        f"容器创建完成: {self.name_edit.text().strip()}\n"
-                        "建议执行「检查容器内 UCM」后进入下一步。")
-            finally:
-                self.panel.finished_all.disconnect(on_done)
+        def on_finished(all_ok: bool) -> None:
+            if all_ok:
+                QMessageBox.information(
+                    self, "完成",
+                    f"容器创建完成: {self.name_edit.text().strip()}\n"
+                    "建议执行「检查容器内 UCM」后进入下一步。")
 
-        self.panel.finished_all.connect(on_done)
-        self.panel.start([(s, make_fn(s)) for s in servers], "创建容器")
+        self.panel.run_tasks([(s, make_fn(s)) for s in servers],
+                             "创建容器", on_finished=on_finished)
 
     def _check_container_ucm(self) -> None:
         name = self.name_edit.text().strip()
@@ -419,4 +459,5 @@ class ContainerPage(QWidget):
                 self.ctx.containers[server.id] = name
             return fn
 
-        self.panel.start([(s, make_fn(s)) for s in self.ctx.selected], "检查容器 UCM")
+        self.panel.run_tasks([(s, make_fn(s)) for s in self.ctx.selected],
+                             "检查容器 UCM")

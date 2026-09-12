@@ -249,7 +249,10 @@ class ServerPage(QWidget):
                                 ) == QMessageBox.Yes:
             self.ctx.registry.remove(server.id)
             self.ctx.selected = [s for s in self.ctx.selected if s.id != server.id]
+            self.ctx.devices.pop(server.id, None)
+            self.ctx.reset_after_servers_changed()
             self.refresh()
+            self.selection_changed.emit()
 
     def _test_connections(self) -> None:
         if not self.ensure_selection():
@@ -259,8 +262,7 @@ class ServerPage(QWidget):
             tctx.progress(50, "连接成功")
             tctx.log(f"已连接 {ssh.server.endpoint} (用户 {ssh.server.username})")
 
-        tasks = [(s, fn) for s in self.ctx.selected]
-        self.panel.start(tasks, "测试连接")
+        self.panel.run_tasks([(s, fn) for s in self.ctx.selected], "测试连接")
 
     def _detect_devices(self) -> None:
         if not self.ensure_selection():
@@ -278,27 +280,23 @@ class ServerPage(QWidget):
                 tctx.progress(100, dev.display)
             return fn
 
-        tasks = [(s, make_fn(s)) for s in self.ctx.selected]
+        def on_finished(all_ok: bool) -> None:
+            if not all_ok or not self._detected:
+                QMessageBox.warning(self, "设备探测", "部分服务器设备探测失败，详见日志")
+                return
+            self.ctx.devices.update(self._detected)
+            for sid, dev in self._detected.items():
+                self.ctx.registry.touch(sid, device=dev)
+            infos = {s.name: (self._detected.get(s.id) or s.device or DeviceInfo())
+                     for s in self.ctx.selected}
+            result = DeviceDetector.verify_consistency(infos)
+            icon = QMessageBox.Information if result.ok else QMessageBox.Warning
+            box = QMessageBox(icon, "设备一致性校验",
+                              result.message + ("\n\n" if result.warnings else "")
+                              + "\n".join(result.warnings))
+            box.exec()
+            self.refresh()
+            self.selection_changed.emit()
 
-        def on_done(all_ok):
-            try:
-                if not all_ok or not self._detected:
-                    QMessageBox.warning(self, "设备探测", "部分服务器设备探测失败，详见日志")
-                    return
-                self.ctx.devices.update(self._detected)
-                for sid, dev in self._detected.items():
-                    self.ctx.registry.touch(sid, device=dev)
-                infos = {s.name: (self._detected.get(s.id) or s.device or DeviceInfo())
-                         for s in self.ctx.selected}
-                result = DeviceDetector.verify_consistency(infos)
-                icon = QMessageBox.Information if result.ok else QMessageBox.Warning
-                box = QMessageBox(icon, "设备一致性校验",
-                                  result.message + ("\n\n" if result.warnings else "")
-                                  + "\n".join(result.warnings))
-                box.exec()
-                self.refresh()
-            finally:
-                self.panel.finished_all.disconnect(on_done)
-
-        self.panel.finished_all.connect(on_done)
-        self.panel.start(tasks, "探测设备")
+        self.panel.run_tasks([(s, make_fn(s)) for s in self.ctx.selected],
+                             "探测设备", on_finished=on_finished)
