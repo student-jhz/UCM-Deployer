@@ -63,6 +63,45 @@ def test_main_window_pages(qapp):
     win.close()
 
 
+def test_main_window_no_black_areas(qapp):
+    """回归测试：布局间隙/边距不得出现未绘制黑色（QSS 规则顺序 bug 曾致窗口大片黑色）。
+
+    原因：`QWidget{background:transparent}` 若声明在 `QMainWindow{background:...}`
+    之后会覆盖窗口背景，导致所有未被实心控件覆盖的区域渲染为黑色。
+    """
+    from ucm_deployer.gui.main_window import MainWindow
+    from ucm_deployer.gui.theme import apply_light_theme
+
+    apply_light_theme(qapp)
+    win = MainWindow()
+    win.resize(1320, 880)
+    win.show()
+    qapp.processEvents()
+    img = win.grab().toImage()
+
+    # 采样：窗口边距区、导航下方留白区、底边距（历史上为黑色的区域）
+    points = [
+        (6, 6, "窗口左上边距"),
+        (660, 6, "窗口顶边距"),
+        (30, 440, "导航下方留白"),
+        (660, 874, "窗口底边距"),
+        (1314, 440, "窗口右边距"),
+    ]
+    blacks = []
+    for x, y, label in points:
+        c = img.pixelColor(x, y)
+        hexs = f"#{c.red():02x}{c.green():02x}{c.blue():02x}"
+        if c.lightness() < 100:
+            blacks.append(f"{label}({x},{y})={hexs}")
+    assert not blacks, "存在未绘制黑色区域: " + ", ".join(blacks)
+
+    # 主题浅色背景整体生效：导航留白区应接近主题底色 #f3f5f8
+    c = img.pixelColor(30, 440)
+    assert c.red() > 230 and c.green() > 230 and c.blue() > 230, \
+        f"留白区非浅色: #{c.red():02x}{c.green():02x}{c.blue():02x}"
+    win.close()
+
+
 def test_server_page_with_mock_servers(qapp, tmp_path):
     from ucm_deployer.core.models import DeviceInfo, DeviceType, ServerInfo
     from ucm_deployer.core.server_registry import ServerRegistry

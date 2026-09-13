@@ -175,6 +175,20 @@ UCM-Deployer/
 - `sync_edits` 编辑回写
 
 累计 131 项测试全部通过。
+
+### 8.3 修复：窗口大片黑色背景（v0.1.1）
+
+**现象**：程序打开后导航下方留白、窗口边距、布局间隙等区域呈黑色。
+
+**根因**：QSS 中 `QWidget { background: transparent; }` 声明在 `QMainWindow, QDialog { background: #f3f5f8; }` **之后**——两条规则对 QMainWindow 同等优先级，后声明者生效 → 主窗口背景被覆盖为 transparent → 所有未被实心控件覆盖的区域未绘制背景，渲染为黑色。
+
+**修复**（theme.py + app.py）：
+1. 调整规则顺序：`QWidget{transparent}` 提到窗口背景规则之前（并加注释说明该陷阱）；
+2. 新增 `apply_light_theme(app)`：显式设置浅色 QPalette + QSS——防止系统深色模式下 Qt 自动切换深色调色板，使静态对话框等未被 QSS 完全覆盖的控件出现浅底白字。
+
+**验证**：真实 GUI 会话像素采样（修复前左列 `(30,440)=#000000` → 修复后 `#f3f5f8`）；新增回归测试 `test_main_window_no_black_areas`（采样 5 个历史黑色点位断言非黑色且为浅色）。此前 offscreen 截图因环境不支持目检而漏判，此后以像素采样为准。
+
+**教训**：QSS 中全局通配规则（如 `QWidget`）必须放在所有窗口级背景规则**之前**；界面渲染质量用像素采样断言，不依赖人工看图。
 | 4 | topology + command_generator | ⬜ |
 | 5 | mock server + CLI + e2e | ⬜ |
 | 6 | GUI | ⬜ |

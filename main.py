@@ -31,6 +31,9 @@ def _run_selftest(argv) -> int:
             from PySide6.QtWidgets import QApplication, QMessageBox
 
             app = QApplication.instance() or QApplication([])
+            app.setStyle("Fusion")
+            from ucm_deployer.gui.theme import apply_light_theme
+            apply_light_theme(app)
             QMessageBox.information(
                 None, "UCM Deployer 自检",
                 text + ("\n（使用 --out 文件路径 可导出报告）"))
@@ -56,7 +59,11 @@ def main() -> int:
             lambda *a, **k: QMessageBox.StandardButton.Yes)
 
         from ucm_deployer.gui.main_window import MainWindow
+        from ucm_deployer.gui.theme import apply_light_theme
+
         app = QApplication.instance() or QApplication([])
+        app.setStyle("Fusion")
+        apply_light_theme(app)
         win = MainWindow()
         win.show()
         app.processEvents()

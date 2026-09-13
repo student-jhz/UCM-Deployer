@@ -16,8 +16,11 @@ QSS = f"""
     font-size: 9pt;
     color: {_TEXT};
 }}
-QMainWindow, QDialog {{ background: {_BG}; }}
+/* 注意: 透明规则必须放在窗口背景之前 —— 同等优先级时后声明的规则生效，
+   若放在 QMainWindow 之后会把窗口背景也覆盖成 transparent，
+   导致未被实心控件覆盖的区域渲染为黑色（未绘制背景） */
 QWidget {{ background: transparent; }}
+QMainWindow, QDialog, QMessageBox {{ background: {_BG}; }}
 QLabel {{ background: transparent; color: {_TEXT}; }}
 QLabel[role="hint"] {{ color: {_TEXT_SUB}; }}
 
@@ -188,3 +191,29 @@ def make_app_icon():
     p.drawText(QRectF(0, 0, 64, 64), Qt.AlignCenter, "UCM")
     p.end()
     return pm
+
+
+def apply_light_theme(app) -> None:
+    """应用统一的浅色主题：显式调色板 + QSS。
+
+    显式设置调色板可避免系统深色模式时 Qt 自动切换深色调色板，
+    造成静态对话框等未完全被 QSS 覆盖的控件出现浅底白字。
+    """
+    from PySide6.QtGui import QColor, QPalette
+
+    pal = QPalette()
+    pal.setColor(QPalette.Window, QColor(_BG))
+    pal.setColor(QPalette.WindowText, QColor(_TEXT))
+    pal.setColor(QPalette.Base, QColor(_CARD))
+    pal.setColor(QPalette.AlternateBase, QColor("#f8fafc"))
+    pal.setColor(QPalette.Text, QColor(_TEXT))
+    pal.setColor(QPalette.Button, QColor(_CARD))
+    pal.setColor(QPalette.ButtonText, QColor(_TEXT))
+    pal.setColor(QPalette.ToolTipBase, QColor("#1e293b"))
+    pal.setColor(QPalette.ToolTipText, QColor("white"))
+    pal.setColor(QPalette.Highlight, QColor(_PRIMARY))
+    pal.setColor(QPalette.HighlightedText, QColor("white"))
+    pal.setColor(QPalette.PlaceholderText, QColor(_TEXT_SUB))
+    pal.setColor(QPalette.Link, QColor(_PRIMARY))
+    app.setPalette(pal)
+    app.setStyleSheet(QSS)
