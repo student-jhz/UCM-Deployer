@@ -24,7 +24,7 @@ QMainWindow, QDialog, QMessageBox {{ background: {_BG}; }}
 QLabel {{ background: transparent; color: {_TEXT}; }}
 QLabel[role="hint"] {{ color: {_TEXT_SUB}; }}
 
-/* ---------- 侧边导航 ---------- */
+/* ---------- 侧边导航（平铺步骤按钮） ---------- */
 QFrame#brandHeader {{
     background: {_CARD};
     border: 1px solid {_BORDER};
@@ -41,22 +41,18 @@ QLabel#brandSub {{
     color: {_TEXT_SUB};
     font-size: 8pt;
 }}
-QListWidget#nav {{
-    background: {_CARD};
-    border: 1px solid {_BORDER};
-    border-radius: 10px;
-    padding: 6px;
-    outline: none;
-}}
-QListWidget#nav::item {{
-    height: 42px;
-    margin: 3px 4px;
-    padding: 8px 12px;
+QPushButton#navBtn {{
+    background: transparent;
+    border: none;
     border-radius: 8px;
+    padding: 8px 14px;
+    text-align: left;
+    font-size: 10pt;
+    font-weight: 400;
     color: #475569;
 }}
-QListWidget#nav::item:hover {{ background: #eef2f8; }}
-QListWidget#nav::item:selected {{
+QPushButton#navBtn:hover {{ background: #e8edf5; }}
+QPushButton#navBtn:checked {{
     background: {_PRIMARY};
     color: white;
     font-weight: 600;

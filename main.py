@@ -69,7 +69,7 @@ def main() -> int:
         app.processEvents()
         # 逐页切换自检
         for i in range(5):
-            win.nav.setCurrentRow(i)
+            win.goto_step(i)
             app.processEvents()
         win.close()
         print("GUI smoke test: OK")

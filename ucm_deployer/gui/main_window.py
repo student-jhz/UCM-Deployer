@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""主窗口：左侧品牌区+五步导航 + 右侧步骤页面 + 状态栏/菜单。"""
+"""主窗口：左侧品牌区+步骤按钮（直接平铺） + 右侧步骤页面 + 状态栏/菜单。"""
 from __future__ import annotations
 
 import os
@@ -8,13 +8,12 @@ import sys
 from PySide6.QtCore import QSettings, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QDialog,
     QDialogButtonBox,
     QFrame,
     QHBoxLayout,
     QLabel,
-    QListWidget,
-    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -34,11 +33,11 @@ from .widgets.launch_page import LaunchPage
 from .widgets.server_page import ServerPage
 
 _STEPS = [
-    ("1. 服务器管理", "选择/管理要部署的服务器，校验设备型号"),
-    ("2. 镜像构建", "基础镜像 + UCM whl -> 带 UCM 的引擎镜像"),
-    ("3. 容器创建", "docker run（kvcache 挂载/模型映射/设备映射）"),
-    ("4. 部署配置", "PD 拓扑 / vllm/sglang 参数 / 生成启动脚本"),
-    ("5. 拉起服务", "部署脚本、按序拉起、健康检查、日志"),
+    ("步骤1：服务器管理", "选择/管理要部署的服务器，校验设备型号"),
+    ("步骤2：镜像构建", "基础镜像 + UCM whl -> 带 UCM 的引擎镜像"),
+    ("步骤3：容器创建", "docker run（kvcache 挂载/模型映射/设备映射）"),
+    ("步骤4：部署配置", "PD 拓扑 / vllm/sglang 参数 / 生成启动脚本"),
+    ("步骤5：拉起服务", "部署脚本、按序拉起、健康检查、日志"),
 ]
 
 
@@ -49,9 +48,8 @@ class MainWindow(QMainWindow):
         self.resize(1340, 880)
         self.ctx = AppContext()
         self._active_row = 0      # 当前已进入的步骤（导航回退基准）
-        self._restoring = False  # 导航恢复中，避免信号重入
 
-        # ---------- 左侧：品牌区 + 导航
+        # ---------- 左侧：品牌区 + 步骤按钮（平铺直显，非滚动列表）
         brand = QFrame()
         brand.setObjectName("brandHeader")
         icon_lbl = QLabel()
@@ -73,18 +71,26 @@ class MainWindow(QMainWindow):
         brow.addLayout(btext)
         brow.addStretch(1)
 
-        self.nav = QListWidget()
-        self.nav.setObjectName("nav")
-        self.nav.setFixedWidth(240)
-        self.nav.setWordWrap(False)                       # 不换行：防止高DPI下撑高出滚动条
-        self.nav.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.nav.setUniformItemSizes(True)
-        for title_, tip in _STEPS:
-            item = QListWidgetItem(title_)
-            item.setToolTip(tip)
-            self.nav.addItem(item)
-        self.nav.setCurrentRow(0)
-        self.nav.currentRowChanged.connect(self._switch)
+        self.nav_group = QButtonGroup(self)
+        self.nav_group.setExclusive(True)
+        self._nav_buttons = []
+        nav_layout = QVBoxLayout()
+        nav_layout.setSpacing(6)
+        nav_layout.setContentsMargins(0, 0, 0, 0)
+        for i, (title_, tip) in enumerate(_STEPS):
+            btn = QPushButton(title_)
+            btn.setObjectName("navBtn")
+            btn.setCheckable(True)
+            btn.setToolTip(tip)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setFixedHeight(40)
+            self.nav_group.addButton(btn, i)
+            nav_layout.addWidget(btn)
+            self._nav_buttons.append(btn)
+        self._nav_buttons[0].setChecked(True)
+        # idClicked 仅在用户点击时发射（程序化 setChecked 不触发），
+        # 因此导航回退/程序切换不会造成信号重入。
+        self.nav_group.idClicked.connect(self._switch)
 
         prev_btn = QPushButton("← 上一步")
         next_btn = QPushButton("下一步 →")
@@ -99,10 +105,11 @@ class MainWindow(QMainWindow):
         left = QVBoxLayout()
         left.setSpacing(10)
         left.addWidget(brand)
-        left.addWidget(self.nav)
+        left.addLayout(nav_layout)
         left.addStretch(1)
         left.addLayout(nav_btns)
         left_widget = QWidget()
+        left_widget.setFixedWidth(240)
         left_widget.setLayout(left)
 
         # ---------- 页面
@@ -257,14 +264,18 @@ class MainWindow(QMainWindow):
                                   self.launch_page)]
 
     # ------------------------------------------------------------ 导航
-    def _switch(self, row: int) -> None:
-        """步骤切换守卫：前置条件不满足时弹提示并把导航恢复到当前步骤。
-
-        注意：在 currentRowChanged 处理器内直接 setCurrentRow 不可靠
-        （Qt 嵌套修改选中状态），因此用 blockSignals + 显式回退。
-        """
-        if self._restoring:
+    def goto_step(self, row: int) -> None:
+        """程序化切换步骤（等价于用户点击左侧步骤按钮）。"""
+        if not (0 <= row < len(self._nav_buttons)):
             return
+        self._nav_buttons[row].setChecked(True)   # 程序化 setChecked 不触发 idClicked
+        self._switch(row)
+
+    def current_step(self) -> int:
+        return self._active_row
+
+    def _switch(self, row: int) -> None:
+        """步骤切换守卫：前置条件不满足时弹提示并把导航恢复到当前步骤。"""
         if row == self._active_row:
             self.pages.setCurrentIndex(row)
             self._update_status()
@@ -285,7 +296,7 @@ class MainWindow(QMainWindow):
             if row == 4:
                 if self.ctx.scripts is None:
                     QMessageBox.information(
-                        self, "提示", "请先在「4. 部署配置」生成部署脚本后再进入本页")
+                        self, "提示", "请先在「步骤4：部署配置」生成部署脚本后再进入本页")
                     self._restore_nav()
                     return
                 # 关键：把步骤4中用户的最新脚本编辑同步进 ctx.scripts
@@ -303,19 +314,14 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     def _restore_nav(self) -> None:
-        """把导航选中恢复到当前已进入的步骤（不触发 _switch 重入）。"""
-        self._restoring = True
-        try:
-            self.nav.blockSignals(True)
-            self.nav.setCurrentRow(self._active_row)
-            self.nav.blockSignals(False)
-        finally:
-            self._restoring = False
+        """把导航选中恢复到当前已进入的步骤（程序化 setChecked 不触发 _switch）。"""
+        if 0 <= self._active_row < len(self._nav_buttons):
+            self._nav_buttons[self._active_row].setChecked(True)
 
     def _require_servers(self) -> bool:
         if not self.ctx.selected:
             QMessageBox.warning(self, "未完成：步骤1",
-                                "请先在「1. 服务器管理」勾选要部署的服务器")
+                                "请先在「步骤1：服务器管理」勾选要部署的服务器")
             return False
         return True
 
@@ -325,7 +331,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self, "未完成：步骤2",
                 "以下服务器还未确定 UCM 镜像：\n  " + "、".join(missing)
-                + "\n\n请先在「2. 镜像构建」完成构建，或检查已有镜像后跳过构建。")
+                + "\n\n请先在「步骤2：镜像构建」完成构建，或检查已有镜像后跳过构建。")
             return False
         return True
 
@@ -335,21 +341,20 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self, "未完成：步骤3",
                 "以下服务器还未确定容器：\n  " + "、".join(missing)
-                + "\n\n请先在「3. 容器创建」创建容器或检查容器内 UCM。")
+                + "\n\n请先在「步骤3：容器创建」创建容器或检查容器内 UCM。")
             return False
         return True
 
     def _prev(self) -> None:
-        row = self.nav.currentRow()
-        if row > 0:
-            self.nav.setCurrentRow(row - 1)
+        if self._active_row > 0:
+            self.goto_step(self._active_row - 1)
 
     def _next(self) -> None:
-        row = self.nav.currentRow()
+        row = self._active_row
         if row == 0:
             self.server_page._collect_selection()
         if row < len(_STEPS) - 1:
-            self.nav.setCurrentRow(row + 1)
+            self.goto_step(row + 1)
 
     # ------------------------------------------------------------ 关闭
     def _restore_geometry(self) -> None:

@@ -56,10 +56,30 @@ def test_main_window_pages(qapp):
     win.show()
     qapp.processEvents()
     for i in range(5):
-        win.nav.setCurrentRow(i)
+        win.goto_step(i)
         qapp.processEvents()
     # 步骤1 无服务器时所有切换被拒绝，页面停留在第0页
     assert win.pages.currentIndex() == 0
+    win.close()
+
+
+def test_nav_is_flat_buttons(qapp):
+    """左侧步骤为平铺按钮（无滚动容器），文案为「步骤N：xxx」。"""
+    from ucm_deployer.gui.main_window import MainWindow
+
+    win = MainWindow()
+    qapp.processEvents()
+    assert len(win._nav_buttons) == 5
+    assert win.nav_group.exclusive()
+    for i, btn in enumerate(win._nav_buttons):
+        # 不是 QListWidget 之类的滚动视图
+        assert btn.objectName() == "navBtn"
+        assert btn.text().startswith(f"步骤{i + 1}：")
+        assert btn.isCheckable()
+    assert win._nav_buttons[0].isChecked()
+    # 程序化切换不触发守卫重入：goto_step 生效
+    win.goto_step(0)
+    assert win._nav_buttons[0].isChecked()
     win.close()
 
 
@@ -74,36 +94,37 @@ def test_nav_rejected_restores_previous_step(qapp, tmp_path):
     qapp.processEvents()
 
     # 无服务器 -> 点步骤2被拒，导航回 0
-    win.nav.setCurrentRow(1)
+    win.goto_step(1)
     qapp.processEvents()
-    assert win.nav.currentRow() == 0
+    assert win.current_step() == 0
     assert win.pages.currentIndex() == 0
 
     # 选服务器 -> 步骤2可进；无镜像 -> 步骤3被拒，导航回 1
     win.ctx.selected = [s]
-    win.nav.setCurrentRow(1)
+    win.goto_step(1)
     qapp.processEvents()
-    assert win.nav.currentRow() == 1
+    assert win.current_step() == 1
     assert win.pages.currentIndex() == 1
-    win.nav.setCurrentRow(2)
+    win.goto_step(2)
     qapp.processEvents()
-    assert win.nav.currentRow() == 1, "无镜像时步骤3应被拒并停留在步骤2"
+    assert win.current_step() == 1, "无镜像时步骤3应被拒并停留在步骤2"
+    assert win._nav_buttons[1].isChecked(), "被拒后按钮选中态应回到步骤2"
 
     # 有镜像 -> 步骤3可进；无容器 -> 步骤4被拒；无脚本 -> 步骤5被拒
     win.ctx.images = {s.id: "img:t"}
-    win.nav.setCurrentRow(2)
+    win.goto_step(2)
     qapp.processEvents()
-    assert win.nav.currentRow() == 2
-    win.nav.setCurrentRow(3)
+    assert win.current_step() == 2
+    win.goto_step(3)
     qapp.processEvents()
-    assert win.nav.currentRow() == 2, "无容器时步骤4应被拒并停留在步骤3"
+    assert win.current_step() == 2, "无容器时步骤4应被拒并停留在步骤3"
     win.ctx.containers = {s.id: "c1"}
-    win.nav.setCurrentRow(3)
+    win.goto_step(3)
     qapp.processEvents()
-    assert win.nav.currentRow() == 3
-    win.nav.setCurrentRow(4)
+    assert win.current_step() == 3
+    win.goto_step(4)
     qapp.processEvents()
-    assert win.nav.currentRow() == 3, "无脚本时步骤5应被拒并停留在步骤4"
+    assert win.current_step() == 3, "无脚本时步骤5应被拒并停留在步骤4"
     win.close()
 
 
