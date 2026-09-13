@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """GUI 冒烟测试（offscreen 模式，无显示器环境可跑）。"""
 import os
 
@@ -23,6 +23,22 @@ def _automate_message_boxes() -> None:
 
 
 _automate_message_boxes()
+
+# 不可达地址使用 127.0.0.1:1（连接立即被拒），避免测试遗留 15s 连接超时的线程
+UNREACHABLE_HOST, UNREACHABLE_PORT = "127.0.0.1", 1
+
+
+@pytest.fixture(autouse=True)
+def _shutdown_panels_after_test(qapp):
+    """每个测试结束后关闭所有任务面板，防止 QThread 运行中被销毁导致退出崩溃。"""
+    yield
+    from PySide6.QtWidgets import QApplication
+
+    from ucm_deployer.gui.widgets.common import ParallelTaskPanel
+    for w in QApplication.topLevelWidgets():
+        for panel in w.findChildren(ParallelTaskPanel):
+            panel.shutdown()
+    qapp.processEvents()
 
 
 @pytest.fixture(scope="module")
@@ -78,8 +94,8 @@ def test_deploy_page_validation(qapp, tmp_path):
     from ucm_deployer.gui.widgets.deploy_page import DeployPage
 
     ctx = AppContext(ServerRegistry(tmp_path))
-    s1 = ServerInfo.create(name="p1", host="10.0.0.1")
-    s2 = ServerInfo.create(name="d1", host="10.0.0.2")
+    s1 = ServerInfo.create(name="p1", host=UNREACHABLE_HOST, port=UNREACHABLE_PORT)
+    s2 = ServerInfo.create(name="d1", host=UNREACHABLE_HOST, port=UNREACHABLE_PORT)
     ctx.selected = [s1, s2]
     ctx.devices = {
         s1.id: DeviceInfo(DeviceType.ASCEND, "Ascend 910B3", 8),
@@ -120,7 +136,7 @@ def test_image_page_form(qapp, tmp_path):
     from ucm_deployer.gui.widgets.image_page import ImagePage
 
     ctx = AppContext(ServerRegistry(tmp_path))
-    ctx.selected = [ServerInfo.create(name="n1", host="10.0.0.1")]
+    ctx.selected = [ServerInfo.create(name="n1", host=UNREACHABLE_HOST, port=UNREACHABLE_PORT)]
     page = ImagePage(ctx)
     page.on_enter()
     qapp.processEvents()
@@ -197,8 +213,8 @@ def test_container_page_per_server_commands(qapp, tmp_path):
     from ucm_deployer.gui.widgets.container_page import ContainerPage
 
     ctx = AppContext(ServerRegistry(tmp_path))
-    s1 = ServerInfo.create(name="n1", host="10.0.0.1")
-    s2 = ServerInfo.create(name="n2", host="10.0.0.2")
+    s1 = ServerInfo.create(name="n1", host=UNREACHABLE_HOST, port=UNREACHABLE_PORT)
+    s2 = ServerInfo.create(name="n2", host=UNREACHABLE_HOST, port=UNREACHABLE_PORT)
     ctx.selected = [s1, s2]
     ctx.devices = {
         s1.id: DeviceInfo(DeviceType.ASCEND, "Ascend 910B3", 8),
@@ -235,7 +251,7 @@ def test_deploy_page_regen_confirm(qapp, tmp_path):
     from ucm_deployer.gui.widgets.deploy_page import DeployPage
 
     ctx = AppContext(ServerRegistry(tmp_path))
-    s1 = ServerInfo.create(name="n1", host="10.0.0.1")
+    s1 = ServerInfo.create(name="n1", host=UNREACHABLE_HOST, port=UNREACHABLE_PORT)
     ctx.selected = [s1]
     ctx.devices = {s1.id: DeviceInfo(DeviceType.ASCEND, "Ascend 910B3", 8)}
     ctx.containers = {s1.id: "c1"}
@@ -275,7 +291,7 @@ def test_deploy_page_sync_edits(qapp, tmp_path):
     from ucm_deployer.gui.widgets.deploy_page import DeployPage
 
     ctx = AppContext(ServerRegistry(tmp_path))
-    s1 = ServerInfo.create(name="n1", host="10.0.0.1")
+    s1 = ServerInfo.create(name="n1", host=UNREACHABLE_HOST, port=UNREACHABLE_PORT)
     ctx.selected = [s1]
     ctx.devices = {s1.id: DeviceInfo(DeviceType.ASCEND, "Ascend 910B3", 8)}
     ctx.containers = {s1.id: "c1"}
