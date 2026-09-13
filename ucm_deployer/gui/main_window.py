@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""主窗口：左侧五步导航 + 右侧步骤页面 + 状态栏/菜单。"""
+"""主窗口：左侧品牌区+五步导航 + 右侧步骤页面 + 状态栏/菜单。"""
 from __future__ import annotations
 
 import os
@@ -8,19 +8,25 @@ import sys
 from PySide6.QtCore import QSettings, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
+    QFrame,
     QHBoxLayout,
+    QLabel,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QPushButton,
     QStackedWidget,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
 
 from ..version import APP_NAME, __version__
 from .state import AppContext
+from .theme import make_app_icon
 from .widgets.container_page import ContainerPage
 from .widgets.deploy_page import DeployPage
 from .widgets.image_page import ImagePage
@@ -40,30 +46,45 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} v{__version__}")
-        self.resize(1320, 880)
+        self.resize(1340, 880)
         self.ctx = AppContext()
+        self._active_row = 0      # 当前已进入的步骤（导航回退基准）
+        self._restoring = False  # 导航恢复中，避免信号重入
 
-        # ---------- 导航
+        # ---------- 左侧：品牌区 + 导航
+        brand = QFrame()
+        brand.setObjectName("brandHeader")
+        icon_lbl = QLabel()
+        icon_lbl.setPixmap(make_app_icon().scaled(
+            40, 40, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        title = QLabel(APP_NAME)
+        title.setObjectName("brandTitle")
+        sub = QLabel(f"v{__version__} · UCM 一键部署")
+        sub.setObjectName("brandSub")
+        btext = QVBoxLayout()
+        btext.setContentsMargins(0, 0, 0, 0)
+        btext.setSpacing(0)
+        btext.addWidget(title)
+        btext.addWidget(sub)
+        brow = QHBoxLayout(brand)
+        brow.setContentsMargins(14, 10, 14, 10)
+        brow.addWidget(icon_lbl)
+        brow.addSpacing(10)
+        brow.addLayout(btext)
+        brow.addStretch(1)
+
         self.nav = QListWidget()
         self.nav.setObjectName("nav")
-        self.nav.setFixedWidth(200)
-        for title, tip in _STEPS:
-            item = QListWidgetItem(title)
+        self.nav.setFixedWidth(240)
+        self.nav.setWordWrap(False)                       # 不换行：防止高DPI下撑高出滚动条
+        self.nav.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.nav.setUniformItemSizes(True)
+        for title_, tip in _STEPS:
+            item = QListWidgetItem(title_)
             item.setToolTip(tip)
             self.nav.addItem(item)
         self.nav.setCurrentRow(0)
         self.nav.currentRowChanged.connect(self._switch)
-
-        # ---------- 页面
-        self.pages = QStackedWidget()
-        self.server_page = ServerPage(self.ctx)
-        self.image_page = ImagePage(self.ctx)
-        self.container_page = ContainerPage(self.ctx)
-        self.deploy_page = DeployPage(self.ctx)
-        self.launch_page = LaunchPage(self.ctx)
-        for p in (self.server_page, self.image_page, self.container_page,
-                  self.deploy_page, self.launch_page):
-            self.pages.addWidget(p)
 
         prev_btn = QPushButton("← 上一步")
         next_btn = QPushButton("下一步 →")
@@ -76,11 +97,24 @@ class MainWindow(QMainWindow):
         nav_btns.addWidget(next_btn)
 
         left = QVBoxLayout()
+        left.setSpacing(10)
+        left.addWidget(brand)
         left.addWidget(self.nav)
         left.addStretch(1)
         left.addLayout(nav_btns)
         left_widget = QWidget()
         left_widget.setLayout(left)
+
+        # ---------- 页面
+        self.pages = QStackedWidget()
+        self.server_page = ServerPage(self.ctx)
+        self.image_page = ImagePage(self.ctx)
+        self.container_page = ContainerPage(self.ctx)
+        self.deploy_page = DeployPage(self.ctx)
+        self.launch_page = LaunchPage(self.ctx)
+        for p in (self.server_page, self.image_page, self.container_page,
+                  self.deploy_page, self.launch_page):
+            self.pages.addWidget(p)
 
         center = QHBoxLayout()
         center.setContentsMargins(12, 12, 12, 12)
@@ -142,24 +176,48 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(None, "打开失败", f"无法打开 {path}:\n{exc}")
 
-    def _open_manual(self) -> None:
+    @staticmethod
+    def find_manual_path() -> str:
+        """定位用户手册（打包环境 _MEIPASS / 源码仓库），找不到返回空串。"""
         candidates = []
         meipass = getattr(sys, "_MEIPASS", None)
         if meipass:
             candidates.append(os.path.join(meipass, "docs", "用户手册.md"))
-        candidates.append(os.path.join(os.path.dirname(os.path.dirname(
-            os.path.dirname(os.path.abspath(__file__)))), "docs", "用户手册.md"))
+        candidates.append(os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__)))), "docs", "用户手册.md"))
         for path in candidates:
             if os.path.isfile(path):
-                try:
-                    os.startfile(path)
-                    return
-                except Exception:
-                    pass
-        QMessageBox.information(
-            self, "用户手册",
-            "未找到用户手册文件。\n可查看仓库 docs/用户手册.md，\n"
-            "或使用「帮助 → 关于」中的仓库地址。")
+                return path
+        return ""
+
+    def _open_manual(self) -> None:
+        """在程序内弹窗显示用户手册（不调用外部程序）。"""
+        path = self.find_manual_path()
+        if not path:
+            QMessageBox.information(
+                self, "用户手册",
+                "未找到用户手册文件。\n可查看仓库 docs/用户手册.md。")
+            return
+        try:
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+        except OSError as exc:
+            QMessageBox.warning(self, "用户手册", f"读取失败: {exc}")
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"用户手册 · {APP_NAME} v{__version__}")
+        dlg.resize(940, 680)
+        browser = QTextBrowser()
+        browser.setPlainText(text)
+        browser.setOpenExternalLinks(False)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(dlg.reject)
+        buttons.clicked.connect(lambda _: dlg.reject())
+        layout = QVBoxLayout(dlg)
+        layout.addWidget(browser, 1)
+        layout.addWidget(buttons)
+        dlg.exec()
 
     def _run_selftest(self) -> None:
         from ..mock.selftest import run_selftest
@@ -200,37 +258,84 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ 导航
     def _switch(self, row: int) -> None:
+        """步骤切换守卫：前置条件不满足时弹提示并把导航恢复到当前步骤。
+
+        注意：在 currentRowChanged 处理器内直接 setCurrentRow 不可靠
+        （Qt 嵌套修改选中状态），因此用 blockSignals + 显式回退。
+        """
+        if self._restoring:
+            return
+        if row == self._active_row:
+            self.pages.setCurrentIndex(row)
+            self._update_status()
+            return
+
         if row == 0:
             pass
-        elif row in (1, 2, 3):
+        elif row in (1, 2, 3, 4):
             if not self._require_servers():
-                self.nav.setCurrentRow(0)
+                self._restore_nav()
                 return
-            if row == 1:
+            if row >= 2 and not self._require_images():
+                self._restore_nav()
+                return
+            if row >= 3 and not self._require_containers():
+                self._restore_nav()
+                return
+            if row == 4:
+                if self.ctx.scripts is None:
+                    QMessageBox.information(
+                        self, "提示", "请先在「4. 部署配置」生成部署脚本后再进入本页")
+                    self._restore_nav()
+                    return
+                # 关键：把步骤4中用户的最新脚本编辑同步进 ctx.scripts
+                self.deploy_page.sync_edits()
+                self.launch_page.on_enter()
+            elif row == 1:
                 self.image_page.on_enter()
             elif row == 2:
                 self.container_page.on_enter()
             else:
                 self.deploy_page.on_enter()
-        elif row == 4:
-            if not self._require_servers():
-                self.nav.setCurrentRow(0)
-                return
-            if self.ctx.scripts is None:
-                QMessageBox.information(
-                    self, "提示", "请先在步骤4生成部署脚本后再进入本页")
-                self.nav.setCurrentRow(3)
-                return
-            # 关键：把步骤4中用户的最新脚本编辑同步进 ctx.scripts
-            self.deploy_page.sync_edits()
-            self.launch_page.on_enter()
+
+        self._active_row = row
         self.pages.setCurrentIndex(row)
         self._update_status()
 
+    def _restore_nav(self) -> None:
+        """把导航选中恢复到当前已进入的步骤（不触发 _switch 重入）。"""
+        self._restoring = True
+        try:
+            self.nav.blockSignals(True)
+            self.nav.setCurrentRow(self._active_row)
+            self.nav.blockSignals(False)
+        finally:
+            self._restoring = False
+
     def _require_servers(self) -> bool:
         if not self.ctx.selected:
-            QMessageBox.warning(self, "未选择服务器",
+            QMessageBox.warning(self, "未完成：步骤1",
                                 "请先在「1. 服务器管理」勾选要部署的服务器")
+            return False
+        return True
+
+    def _require_images(self) -> bool:
+        missing = [s.name for s in self.ctx.selected if s.id not in self.ctx.images]
+        if missing:
+            QMessageBox.warning(
+                self, "未完成：步骤2",
+                "以下服务器还未确定 UCM 镜像：\n  " + "、".join(missing)
+                + "\n\n请先在「2. 镜像构建」完成构建，或检查已有镜像后跳过构建。")
+            return False
+        return True
+
+    def _require_containers(self) -> bool:
+        missing = [s.name for s in self.ctx.selected if s.id not in self.ctx.containers]
+        if missing:
+            QMessageBox.warning(
+                self, "未完成：步骤3",
+                "以下服务器还未确定容器：\n  " + "、".join(missing)
+                + "\n\n请先在「3. 容器创建」创建容器或检查容器内 UCM。")
             return False
         return True
 

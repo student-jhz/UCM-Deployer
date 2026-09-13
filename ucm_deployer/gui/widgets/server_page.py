@@ -259,8 +259,9 @@ class ServerPage(QWidget):
             return
 
         def fn(ssh, tctx):
-            tctx.progress(50, "连接成功")
+            tctx.progress(50, "SSH 连接成功")
             tctx.log(f"已连接 {ssh.server.endpoint} (用户 {ssh.server.username})")
+            tctx.progress(100, "连接测试完成")
 
         self.panel.run_tasks([(s, fn) for s in self.ctx.selected], "测试连接")
 

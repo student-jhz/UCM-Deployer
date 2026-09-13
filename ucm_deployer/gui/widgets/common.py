@@ -268,6 +268,15 @@ class ParallelTaskPanel(QWidget):
     def _on_done(self, server_id: str, ok: bool, message: str) -> None:
         self._results[server_id] = (ok, message)
         row = self._row_of(server_id)
+        bar = self._bars.get(server_id)
+        if bar is not None:
+            if ok:
+                # 任务正常结束但未上报 100% 时自动补满，避免进度条停滞
+                if bar.value() < 100:
+                    bar.setValue(100)
+                    bar.setFormat("100%  完成")
+            else:
+                bar.setFormat("失败")
         if row >= 0:
             item = self.table.item(row, 2)
             if item is None:

@@ -58,9 +58,86 @@ def test_main_window_pages(qapp):
     for i in range(5):
         win.nav.setCurrentRow(i)
         qapp.processEvents()
-    # 步骤1 无服务器时应停留在第0页
+    # 步骤1 无服务器时所有切换被拒绝，页面停留在第0页
     assert win.pages.currentIndex() == 0
     win.close()
+
+
+def test_nav_rejected_restores_previous_step(qapp, tmp_path):
+    """点击未完成的前置步骤时：提示后导航应停留在当前步骤（不跳走）。"""
+    from ucm_deployer.core.models import ServerInfo
+    from ucm_deployer.gui.main_window import MainWindow
+
+    s = ServerInfo.create(name="n", host=UNREACHABLE_HOST, port=UNREACHABLE_PORT)
+    win = MainWindow()
+    win.show()
+    qapp.processEvents()
+
+    # 无服务器 -> 点步骤2被拒，导航回 0
+    win.nav.setCurrentRow(1)
+    qapp.processEvents()
+    assert win.nav.currentRow() == 0
+    assert win.pages.currentIndex() == 0
+
+    # 选服务器 -> 步骤2可进；无镜像 -> 步骤3被拒，导航回 1
+    win.ctx.selected = [s]
+    win.nav.setCurrentRow(1)
+    qapp.processEvents()
+    assert win.nav.currentRow() == 1
+    assert win.pages.currentIndex() == 1
+    win.nav.setCurrentRow(2)
+    qapp.processEvents()
+    assert win.nav.currentRow() == 1, "无镜像时步骤3应被拒并停留在步骤2"
+
+    # 有镜像 -> 步骤3可进；无容器 -> 步骤4被拒；无脚本 -> 步骤5被拒
+    win.ctx.images = {s.id: "img:t"}
+    win.nav.setCurrentRow(2)
+    qapp.processEvents()
+    assert win.nav.currentRow() == 2
+    win.nav.setCurrentRow(3)
+    qapp.processEvents()
+    assert win.nav.currentRow() == 2, "无容器时步骤4应被拒并停留在步骤3"
+    win.ctx.containers = {s.id: "c1"}
+    win.nav.setCurrentRow(3)
+    qapp.processEvents()
+    assert win.nav.currentRow() == 3
+    win.nav.setCurrentRow(4)
+    qapp.processEvents()
+    assert win.nav.currentRow() == 3, "无脚本时步骤5应被拒并停留在步骤4"
+    win.close()
+
+
+def test_panel_bar_autocompletes_on_done(qapp, tmp_path):
+    """任务函数未上报100%时，面板应在完成时自动补满进度条。"""
+    from ucm_deployer.core.models import ServerInfo
+    from ucm_deployer.gui.widgets.common import ParallelTaskPanel
+    from ucm_deployer.mock.mock_server import MockSSHServer
+
+    server = MockSSHServer(device="ascend", cards=2, root_dir=str(tmp_path / "r"))
+    port = server.start()
+    try:
+        info = ServerInfo.create(name="m", host="127.0.0.1", port=port,
+                                 username="root", password="root")
+        panel = ParallelTaskPanel()
+
+        def fn(ssh, tctx):
+            tctx.progress(50, "只做一半")
+
+        assert panel.run_tasks([(info, fn)], "测试") is True
+        assert _wait_panel(panel, qapp)
+        bar = panel._bars[info.id]
+        assert bar.value() == 100
+        assert "完成" in bar.format()
+    finally:
+        server.stop()
+
+
+def test_find_manual_path(qapp):
+    from ucm_deployer.gui.main_window import MainWindow
+
+    path = MainWindow.find_manual_path()
+    assert path, "源码环境应能定位用户手册"
+    assert path.endswith("用户手册.md")
 
 
 def test_main_window_no_black_areas(qapp):

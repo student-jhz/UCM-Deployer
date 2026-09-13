@@ -25,6 +25,22 @@ QLabel {{ background: transparent; color: {_TEXT}; }}
 QLabel[role="hint"] {{ color: {_TEXT_SUB}; }}
 
 /* ---------- 侧边导航 ---------- */
+QFrame#brandHeader {{
+    background: {_CARD};
+    border: 1px solid {_BORDER};
+    border-radius: 10px;
+}}
+QLabel#brandTitle {{
+    background: transparent;
+    font-size: 14pt;
+    font-weight: 700;
+    color: #1e293b;
+}}
+QLabel#brandSub {{
+    background: transparent;
+    color: {_TEXT_SUB};
+    font-size: 8pt;
+}}
 QListWidget#nav {{
     background: {_CARD};
     border: 1px solid {_BORDER};
