@@ -89,8 +89,28 @@ class ImagePage(QWidget):
         row3 = QHBoxLayout()
         row3.addWidget(self.toolkit_edit, 1)
         row3.addWidget(toolkit_btn)
+
+        # 在线下载提示（本地没有包时指引获取途径，链接可点击直达浏览器）
+        self.ucm_dl_hint = QLabel(
+            '⬇ 本地没有 UCM 包？<a href="https://github.com/ModelEngine-Group/'
+            'unified-cache-management/releases">从 GitHub Releases 在线下载'
+            ' uc_manager-*.whl</a>')
+        self.wrapt_dl_hint = QLabel(
+            '⬇ 离线依赖 wrapt：<a href="https://pypi.org/project/wrapt/#files">'
+            '从 PyPI 文件列表在线下载</a>'
+            '（选择匹配服务器 Python 版本与 CPU 架构的 whl，'
+            '如 manylinux 的 x86_64 / aarch64）')
+        for hint in (self.ucm_dl_hint, self.wrapt_dl_hint):
+            hint.setProperty("role", "hint")
+            hint.setOpenExternalLinks(True)
+        self.ucm_dl_hint.setToolTip(
+            "https://github.com/ModelEngine-Group/unified-cache-management/releases")
+        self.wrapt_dl_hint.setToolTip("https://pypi.org/project/wrapt/#files")
+
         form.addRow("UCM whl 包*", row1)
+        form.addRow("", self.ucm_dl_hint)
         form.addRow("wrapt whl（离线）", row2)
+        form.addRow("", self.wrapt_dl_hint)
         form.addRow("ucm-toolkit 源码目录（可选）", row3)
         form.addRow("联网模式", self.online_radio)
         form.addRow("", self.offline_radio)

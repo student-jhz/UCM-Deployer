@@ -83,6 +83,27 @@ def test_nav_is_flat_buttons(qapp):
     win.close()
 
 
+def test_image_page_download_hints(qapp, tmp_path):
+    """步骤2 包输入框下方应提供在线下载链接提示（本地无包时指引获取）。"""
+    from ucm_deployer.core.models import ServerInfo
+    from ucm_deployer.core.server_registry import ServerRegistry
+    from ucm_deployer.gui.state import AppContext
+    from ucm_deployer.gui.widgets.image_page import ImagePage
+
+    ctx = AppContext(ServerRegistry(tmp_path))
+    ctx.selected = [ServerInfo.create(name="n1", host=UNREACHABLE_HOST,
+                                      port=UNREACHABLE_PORT)]
+    page = ImagePage(ctx)
+    # UCM whl 下载指引：GitHub Releases 链接可点击
+    assert "unified-cache-management/releases" in page.ucm_dl_hint.text()
+    assert page.ucm_dl_hint.openExternalLinks()
+    assert "github.com" in page.ucm_dl_hint.toolTip()
+    # wrapt 下载指引：PyPI 链接 + 架构匹配提示
+    assert "pypi.org/project/wrapt" in page.wrapt_dl_hint.text()
+    assert page.wrapt_dl_hint.openExternalLinks()
+    assert "aarch64" in page.wrapt_dl_hint.text(), "应提示选择匹配服务器架构的 whl"
+
+
 def test_fill_image_combo(qapp):
     """镜像下拉：只可选择、显示大小、UCM 优先、ref 存 userData、空列表占位。"""
     from PySide6.QtWidgets import QComboBox
