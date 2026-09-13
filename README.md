@@ -43,6 +43,16 @@ powershell -ExecutionPolicy Bypass -File scripts\build_exe.ps1
 # 先跑全部测试，再产出 dist\UCM-Deployer.exe
 ```
 
+### 云端自动构建发布（推荐）
+
+推送 `v*` 标签即触发 GitHub Actions：云端跑全量测试 → PyInstaller 打包 → 产物自检（`--selftest`/`--smoke`）→ 自动挂到对应 Release（`.github/workflows/release.yml`）：
+
+```powershell
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+也支持在 Actions 页面手动运行（workflow_dispatch，指定标签）。本地 `scripts\create_release.ps1` 为无 Actions 时的离线备选。
+
 ## 无真实服务器？用内置模拟服务器
 
 ```powershell

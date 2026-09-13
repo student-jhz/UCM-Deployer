@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要构建并发布的标签（如 v0.1.0）'
+        required: true
+        default: 'v0.1.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Setup Python 3.9
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+          cache: 'pip'
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: 运行测试
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONIOENCODING: utf-8
+        run: python -m pytest tests -q
+
+      - name: PyInstaller 打包
+        run: python -m PyInstaller --noconfirm --clean ucm_deployer.spec
+
+      - name: 产物自检（模拟服务器 15 步全流程 + GUI 冒烟）
+        shell: pwsh
+        run: |
+          $exe = "dist/UCM-Deployer.exe"
+          if (-not (Test-Path $exe)) { throw "未找到 $exe" }
+          $p = Start-Process -FilePath $exe -ArgumentList "--selftest","--out","selftest-report.txt" -Wait -PassThru
+          Get-Content selftest-report.txt -Tail 4
+          if ($p.ExitCode -ne 0) { throw "selftest 退出码 $($p.ExitCode)" }
+          $p2 = Start-Process -FilePath $exe -ArgumentList "--smoke" -Wait -PassThru
+          if ($p2.ExitCode -ne 0) { throw "smoke 退出码 $($p2.ExitCode)" }
+
+      - name: 生成 Release 说明
+        shell: pwsh
+        run: |
+          $tag = "${{ inputs.tag || github.ref_name }}"
+          $ver = $tag.TrimStart('v')
+          (Get-Content scripts/release_notes_template.md -Raw -Encoding UTF8).Replace('{VERSION}', $ver) |
+            Set-Content -NoNewline -Encoding UTF8 release_body.md
+
+      - name: 上传到 GitHub Release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          name: UCM Deployer ${{ inputs.tag || github.ref_name }}
+          body_path: release_body.md
+          files: dist/UCM-Deployer.exe
+          fail_on_unmatched_files: true
+          overwrite_files: true
