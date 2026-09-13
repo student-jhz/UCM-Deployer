@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -34,7 +36,8 @@ from ...core.docker_manager import DockerManager
 from ...core.models import VolumeMount
 from ...core.ssh_client import SSHClient
 from ..state import AppContext
-from .common import ParallelTaskPanel, RemoteDirDialog
+from .common import (ParallelTaskPanel, RemoteDirDialog, combo_ref,
+                     fill_image_combo, image_from_ref)
 
 
 class _PathPickRow(QWidget):
@@ -184,6 +187,7 @@ class ContainerPage(QWidget):
         cmd_layout.addWidget(self.cmd_tabs)
         cmd_layout.addWidget(self.cmd_hint)
         cmd_layout.addLayout(btns)
+        self.cmd_tabs.setMinimumHeight(240)
 
         self.panel = ParallelTaskPanel()
 
@@ -199,11 +203,25 @@ class ContainerPage(QWidget):
         top_box.layout().addLayout(top_row)
         top_box.layout().addLayout(inner)
 
+        # ---------- 配置区放入滚动容器：窗口小可滚动，全屏时布局稳定
+        config_widget = QWidget()
+        config_layout = QVBoxLayout(config_widget)
+        config_layout.setContentsMargins(0, 0, 0, 0)
+        config_layout.addWidget(top_box)
+        config_layout.addWidget(kv_box)
+        config_layout.addWidget(mount_box)
+        config_layout.addWidget(cmd_box)
+
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setWidget(config_widget)
+        self.scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}")
+        self.scroll.viewport().setAutoFillBackground(False)
+
         layout = QVBoxLayout(self)
-        layout.addWidget(top_box)
-        layout.addWidget(kv_box)
-        layout.addWidget(mount_box)
-        layout.addWidget(cmd_box)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.scroll, 3)
         layout.addWidget(self.panel, 2)
 
     # ------------------------------------------------------------ 辅助
@@ -219,13 +237,14 @@ class ContainerPage(QWidget):
         self.placeholder.setVisible(not self.ctx.selected)
         for s in self.ctx.selected:
             combo = QComboBox()
-            combo.setEditable(True)
-            combo.setMinimumWidth(360)
-            current = self.ctx.images.get(s.id, "")
-            if current:
-                combo.addItem(current)
+            combo.setEditable(False)   # 只能从服务器镜像列表中选择
+            combo.setMinimumWidth(380)
             self.image_rows[s.id] = combo
             self.image_form.addRow(f"{s.name} ({s.host})", combo)
+            # 已记录的 UCM 镜像先回显（自动刷新后补全列表）
+            fill_image_combo(combo,
+                             [image_from_ref(self.ctx.images[s.id])]
+                             if self.ctx.images.get(s.id) else [])
         self._rebuild_cmd_tabs()
         if self.ctx.selected and not getattr(self, "_image_refs", None):
             self._refresh_images()
@@ -248,7 +267,8 @@ class ContainerPage(QWidget):
         kv_dirs = [self.kv_list.item(i).text() for i in range(self.kv_list.count())]
         dev = self.ctx.device_of(server)
         combo = self.image_rows.get(server.id)
-        image = combo.currentText().strip() if combo else self.ctx.images.get(server.id, "")
+        image = (combo_ref(combo) if combo is not None else "") \
+            or self.ctx.images.get(server.id, "")
         return ContainerCreateConfig(
             image=image, name=self.name_edit.text().strip(),
             device_type=dev.device_type, device_count=dev.count,
@@ -365,10 +385,10 @@ class ContainerPage(QWidget):
         def make_fn(server):
             def fn(ssh, tctx):
                 dm = DockerManager(ssh)
-                refs = [im.ref for im in dm.list_images()]
-                tctx.log("\n".join(refs))
+                images = dm.list_images()
+                tctx.log("\n".join(f"{im.ref}    {im.size}" for im in images))
                 self._image_refs = getattr(self, "_image_refs", {})
-                self._image_refs[server.id] = refs
+                self._image_refs[server.id] = images
             return fn
 
         def on_finished(all_ok: bool) -> None:
@@ -376,15 +396,8 @@ class ContainerPage(QWidget):
                 return
             refs_map = getattr(self, "_image_refs", {})
             for sid, combo in self.image_rows.items():
-                current = combo.currentText()
-                combo.clear()
-                refs = sorted(refs_map.get(sid, []),
-                               key=lambda r: "ucm" not in r.lower())
-                combo.addItems(refs)
-                if current:
-                    combo.setCurrentText(current)
-                elif self.ctx.images.get(sid) in refs:
-                    combo.setCurrentText(self.ctx.images[sid])
+                fill_image_combo(combo, refs_map.get(sid) or [],
+                                 current=self.ctx.images.get(sid, ""))
 
         self.panel.run_tasks([(s, make_fn(s)) for s in self.ctx.selected],
                              "刷新镜像", on_finished=on_finished)
@@ -393,9 +406,9 @@ class ContainerPage(QWidget):
         def make_fn(server):
             def fn(ssh, tctx):
                 combo = self.image_rows.get(server.id)
-                ref = combo.currentText().strip() if combo else ""
+                ref = combo_ref(combo) if combo is not None else ""
                 if not ref:
-                    raise RuntimeError("未选择镜像")
+                    raise RuntimeError("未选择镜像（请先刷新镜像列表）")
                 ucm = DockerManager(ssh).image_ucm_info(ref)
                 tctx.log(f"{ref}: {ucm}")
                 if not ucm.installed:

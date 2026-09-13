@@ -83,6 +83,30 @@ def test_nav_is_flat_buttons(qapp):
     win.close()
 
 
+def test_fill_image_combo(qapp):
+    """镜像下拉：只可选择、显示大小、UCM 优先、ref 存 userData、空列表占位。"""
+    from PySide6.QtWidgets import QComboBox
+
+    from ucm_deployer.core.models import DockerImage
+    from ucm_deployer.gui.widgets.common import combo_ref, fill_image_combo
+
+    combo = QComboBox()
+    images = [
+        DockerImage("quay.io/ascend/vllm-ascend", "v0.23.0-a3", "id1", "18.2GB"),
+        DockerImage("ucm-vllm", "v0.1", "id2", "5GB"),
+    ]
+    fill_image_combo(combo, images, current="quay.io/ascend/vllm-ascend:v0.23.0-a3")
+    assert combo.count() == 2
+    assert combo_ref(combo) == "quay.io/ascend/vllm-ascend:v0.23.0-a3"
+    assert "18.2GB" in combo.currentText(), "应显示镜像大小"
+    assert "ucm-vllm:v0.1" in combo.itemText(0), "UCM 镜像应排在最前"
+
+    # 空列表 -> 占位提示，ref 为空
+    fill_image_combo(combo, [])
+    assert combo_ref(combo) == ""
+    assert "尚未加载" in combo.currentText()
+
+
 def test_nav_rejected_restores_previous_step(qapp, tmp_path):
     """点击未完成的前置步骤时：提示后导航应停留在当前步骤（不跳走）。"""
     from ucm_deployer.core.models import ServerInfo
@@ -519,6 +543,12 @@ def test_gui_with_mock_server_flow(qapp, tmp_path):
         assert _wait_panel(ip.panel, qapp), "刷新镜像超时"
         combo = ip.image_rows[info.id]
         assert combo.count() >= 2
+        # 镜像只能从服务器列表选择（不可手输），显示大小，ref 存 userData
+        from ucm_deployer.gui.widgets.common import combo_ref
+        assert not combo.isEditable()
+        ref = combo_ref(combo)
+        assert ref and ":" in ref
+        assert "GB" in combo.currentText()
 
         whl = str(tmp_path / "uc_manager-0.2.1-py3-none-any.whl")
         open(whl, "wb").write(b"PK fake")
@@ -536,6 +566,13 @@ def test_gui_with_mock_server_flow(qapp, tmp_path):
         cp = ContainerPage(ctx)
         cp.on_enter()
         assert _wait_panel(cp.panel, qapp), "进入页面自动刷新镜像超时"
+        # 配置区在滚动容器内（小窗口可滚动，全屏布局稳定）
+        from PySide6.QtWidgets import QScrollArea
+        assert cp.findChild(QScrollArea) is not None
+        # 容器页镜像下拉同样只可选择且已自动加载
+        ccombo = cp.image_rows[info.id]
+        assert not ccombo.isEditable()
+        assert combo_ref(ccombo) == ctx.images[info.id], "应回显已记录的 UCM 镜像"
         cp.kv_add_row.edit.setText("/mnt/nfs_share")
         cp._kv_add()
         cp.model_host.edit.setText("/models/Qwen3-32B")

@@ -29,11 +29,57 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...core.models import ServerInfo
+from ...core.models import DockerImage, ServerInfo
 from ...core.ssh_client import SSHClient
 from ...utils.log import get_logger
 
 logger = get_logger(__name__)
+
+
+# ============================================================ 镜像下拉
+def fill_image_combo(combo: QComboBox, images: List[DockerImage],
+                     current: str = "") -> None:
+    """填充镜像下拉框：只可选择（不可手输），显示镜像大小，userData 存 ref。
+
+    - UCM 镜像优先排序；悬浮提示显示创建时间
+    - 优先恢复 current（上次选择/已记录值），否则选第一项
+    - 无镜像时显示占位提示（data 为空串，视作未选择）
+    """
+    combo.blockSignals(True)
+    prev = current or combo_ref(combo)
+    combo.clear()
+    if not images:
+        combo.addItem("（尚未加载镜像，请点击「刷新镜像列表」）")
+        combo.setItemData(0, "", Qt.UserRole)
+        combo.blockSignals(False)
+        return
+    ordered = sorted(images, key=lambda im: "ucm" not in im.ref.lower())
+    for im in ordered:
+        label = f"{im.ref}    {im.size}".rstrip()
+        combo.addItem(label)
+        idx = combo.count() - 1
+        combo.setItemData(idx, im.ref, Qt.UserRole)
+        if im.created:
+            combo.setItemData(idx, f"创建时间: {im.created}", Qt.ToolTipRole)
+    for i in range(combo.count()):
+        if str(combo.itemData(i, Qt.UserRole) or "") == prev and prev:
+            combo.setCurrentIndex(i)
+            break
+    else:
+        combo.setCurrentIndex(0)
+    combo.blockSignals(False)
+
+
+def combo_ref(combo: QComboBox) -> str:
+    """取镜像下拉当前选择的镜像引用（userData），未选择返回空串。"""
+    if combo.count() <= 0:
+        return ""
+    return str(combo.currentData(Qt.UserRole) or "")
+
+
+def image_from_ref(ref: str) -> DockerImage:
+    """由 ref 构造占位 DockerImage（用于预填/新加载的镜像，无大小信息）。"""
+    return DockerImage(repository=ref, tag="", image_id=ref)
 
 
 # ============================================================ 任务线程

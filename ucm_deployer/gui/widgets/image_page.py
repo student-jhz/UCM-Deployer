@@ -24,9 +24,9 @@ from PySide6.QtWidgets import (
 from ...core.docker_manager import DockerManager
 from ...core.image_builder import (ImageBuildConfig, ImageBuilder,
                                    suggest_tag, upload_image_tar)
-from ...core.models import ServerInfo
+from ...core.models import DockerImage, ServerInfo
 from ..state import AppContext
-from .common import ParallelTaskPanel
+from .common import ParallelTaskPanel, combo_ref, fill_image_combo, image_from_ref
 
 
 class ImagePage(QWidget):
@@ -130,7 +130,7 @@ class ImagePage(QWidget):
 
     # ------------------------------------------------------------ 初始化
     def on_enter(self) -> None:
-        """进入本页时按已选服务器刷新镜像选择行。"""
+        """进入本页：按已选服务器重建镜像下拉（只可选择）并自动加载镜像列表。"""
         for i in reversed(range(self.image_form.count())):
             item = self.image_form.takeAt(0)
             w = item.widget()
@@ -140,28 +140,32 @@ class ImagePage(QWidget):
         self.placeholder.setVisible(not self.ctx.selected)
         for s in self.ctx.selected:
             combo = QComboBox()
-            combo.setEditable(True)
-            combo.setMinimumWidth(360)
+            combo.setEditable(False)   # 只能从服务器镜像列表中选择，不可手输
+            combo.setMinimumWidth(380)
             combo.currentTextChanged.connect(self._suggest_tag_if_empty)
             self.image_rows[s.id] = combo
             self.image_form.addRow(f"{s.name} ({s.host})", combo)
+            # 已记录的镜像先回显（等待自动刷新补全大小等信息）
+            fill_image_combo(combo,
+                             [image_from_ref(self.ctx.images[s.id])]
+                             if self.ctx.images.get(s.id) else [])
         devs = {s.id: self.ctx.device_of(s) for s in self.ctx.selected}
         types = {d.device_type.value for d in devs.values()}
         platform = "ascend" if types == {"ascend"} else ("cuda" if types == {"nvidia"} else "ascend")
         self.platform_label.setText(platform)
-        # 任一已选服务器缺少镜像列表时刷新；否则直接回填已知列表
+        # 任一已选服务器缺少镜像列表时自动加载；否则直接回填已知列表
         missing = [s for s in self.ctx.selected if s.id not in self._image_lists]
-        if missing or not self.image_rows:
-            if self.ctx.selected:
-                self._refresh_images()
-        else:
+        if self.ctx.selected and (missing or not self.image_rows):
+            self._refresh_images()
+        elif self.image_rows:
             self._apply_image_lists()
 
     def _suggest_tag_if_empty(self, *_):
         if not self.tag_edit.text().strip():
             first = next(iter(self.image_rows.values()), None)
-            if first is not None and first.currentText():
-                self.tag_edit.setText(suggest_tag(first.currentText()))
+            ref = combo_ref(first) if first is not None else ""
+            if ref:
+                self.tag_edit.setText(suggest_tag(ref))
 
     def _servers(self) -> List[ServerInfo]:
         return self.ctx.selected
@@ -203,37 +207,34 @@ class ImagePage(QWidget):
                 dm = DockerManager(ssh)
                 if not dm.check_docker():
                     raise RuntimeError("docker 不可用")
-                refs = [im.ref for im in dm.list_images()]
-                self._image_lists[server.id] = refs
-                tctx.log(f"共 {len(refs)} 个镜像")
-                for r in refs:
-                    tctx.log("  " + r)
-                tctx.progress(100, f"{len(refs)} 个镜像")
+                images = dm.list_images()
+                self._image_lists[server.id] = images
+                tctx.log(f"共 {len(images)} 个镜像：")
+                for im in images:
+                    mark = " [疑似UCM]" if "ucm" in im.ref.lower() else ""
+                    tctx.log(f"  {im.ref}    {im.size}{mark}")
+                tctx.progress(100, f"{len(images)} 个镜像")
             return fn
 
         def on_finished(all_ok: bool) -> None:
             if all_ok:
                 self._apply_image_lists()
+            else:
+                for combo in self.image_rows.values():
+                    fill_image_combo(combo, [])  # 显示加载失败占位提示
 
         self.panel.run_tasks([(s, make_fn(s)) for s in servers],
                              "刷新镜像列表", on_finished=on_finished)
 
     def _apply_image_lists(self) -> None:
         for sid, combo in self.image_rows.items():
-            current = combo.currentText()
-            combo.clear()
-            refs = self._image_lists.get(sid) or []
-            # UCM 镜像优先
-            refs = sorted(refs, key=lambda r: not self._looks_ucm(r))
-            combo.addItems(refs)
-            if current and current in refs:
-                combo.setCurrentText(current)
-            elif refs:
-                combo.setCurrentIndex(0)
+            fill_image_combo(combo, self._image_lists.get(sid) or [],
+                             current=self.ctx.images.get(sid, ""))
         if not self.tag_edit.text().strip():
             first = next(iter(self.image_rows.values()), None)
-            if first is not None and first.currentText():
-                self.tag_edit.setText(suggest_tag(first.currentText()))
+            ref = combo_ref(first) if first is not None else ""
+            if ref:
+                self.tag_edit.setText(suggest_tag(ref))
 
     @staticmethod
     def _looks_ucm(ref: str) -> bool:
@@ -266,8 +267,8 @@ class ImagePage(QWidget):
                 tctx.log("已加载: " + ", ".join(refs))
                 self._image_lists.setdefault(ssh.server.id, [])
                 for r in refs:
-                    if r not in self._image_lists[ssh.server.id]:
-                        self._image_lists[ssh.server.id].append(r)
+                    if not any(im.ref == r for im in self._image_lists[ssh.server.id]):
+                        self._image_lists[ssh.server.id].append(image_from_ref(r))
             return fn
 
         def on_finished(all_ok: bool) -> None:
@@ -281,11 +282,15 @@ class ImagePage(QWidget):
     def _selected_bases(self) -> Optional[Dict[str, str]]:
         bases = {}
         for sid, combo in self.image_rows.items():
-            text = combo.currentText().strip()
-            if not text:
-                QMessageBox.warning(self, "参数错误", "存在未选择基础镜像的服务器")
+            ref = combo_ref(combo)
+            if not ref:
+                QMessageBox.warning(
+                    self, "参数错误",
+                    "存在未选择基础镜像的服务器。\n"
+                    "镜像列表来自服务器 docker images（进入本页自动加载，"
+                    "也可点「刷新镜像列表」），只能从列表中选择。")
                 return None
-            bases[sid] = text
+            bases[sid] = ref
         return bases
 
     def _check_ucm(self) -> None:
