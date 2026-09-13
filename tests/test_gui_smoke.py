@@ -161,6 +161,39 @@ def test_find_manual_path(qapp):
     assert path.endswith("用户手册.md")
 
 
+def test_manual_renders_markdown(qapp):
+    """手册应渲染为富文本：标题/表格/代码块转 HTML，而非原始 md 源码。"""
+    from ucm_deployer.gui.main_window import MainWindow
+
+    path = MainWindow.find_manual_path()
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    html = MainWindow.manual_html(text)
+    assert html, "markdown 库可用时应产出 HTML"
+    assert "<h1>" in html and "<h2>" in html
+    assert "<table>" in html, "手册中的表格应转为 HTML 表格"
+    assert "<pre>" in html or "<code>" in html, "代码块应保留代码样式"
+    assert "|" not in html.split("<table>")[1].split("</table>")[0].replace("&#124;", ""), \
+        "表格不应残留 markdown 竖线源码"
+
+
+def test_manual_html_fallback_without_markdown(qapp, monkeypatch):
+    """markdown 库缺失时返回空串（调用方回退纯文本显示）。"""
+    import builtins
+
+    from ucm_deployer.gui.main_window import MainWindow
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "markdown":
+            raise ImportError("No module named markdown")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    assert MainWindow.manual_html("# 标题") == ""
+
+
 def test_main_window_no_black_areas(qapp):
     """回归测试：布局间隙/边距不得出现未绘制黑色（QSS 规则顺序 bug 曾致窗口大片黑色）。
 

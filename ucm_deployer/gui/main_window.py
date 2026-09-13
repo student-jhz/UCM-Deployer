@@ -40,6 +40,20 @@ _STEPS = [
     ("步骤5：拉起服务", "部署脚本、按序拉起、健康检查、日志"),
 ]
 
+# 用户手册（Markdown）渲染后的富文本样式（QTextBrowser 支持的 CSS 子集）
+_MANUAL_CSS = """
+body { font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif; }
+h1 { color: #1e293b; }
+h2 { color: #2f6fed; }
+h3 { color: #1e293b; }
+code { background-color: #f1f5f9; font-family: "Consolas", monospace; }
+pre { background-color: #f8fafc; }
+table { border-collapse: collapse; }
+th { background-color: #f1f5f9; }
+th, td { border: 1px solid #d7dee8; padding: 3px 8px; }
+blockquote { color: #64748b; }
+"""
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -198,8 +212,18 @@ class MainWindow(QMainWindow):
                 return path
         return ""
 
+    @staticmethod
+    def manual_html(md_text: str) -> str:
+        """Markdown -> HTML（表格/围栏代码块）。markdown 库缺失时返回空串（调用方回退纯文本）。"""
+        try:
+            import markdown
+        except ImportError:
+            return ""
+        return markdown.markdown(md_text,
+                                 extensions=["tables", "fenced_code"])
+
     def _open_manual(self) -> None:
-        """在程序内弹窗显示用户手册（不调用外部程序）。"""
+        """在程序内弹窗显示用户手册（Markdown 渲染为富文本，不调用外部程序）。"""
         path = self.find_manual_path()
         if not path:
             QMessageBox.information(
@@ -216,8 +240,14 @@ class MainWindow(QMainWindow):
         dlg.setWindowTitle(f"用户手册 · {APP_NAME} v{__version__}")
         dlg.resize(940, 680)
         browser = QTextBrowser()
-        browser.setPlainText(text)
         browser.setOpenExternalLinks(False)
+        html = self.manual_html(text)
+        if html:
+            # 注意: DefaultStyleSheet 必须在 setHtml 之前设置才生效
+            browser.document().setDefaultStyleSheet(_MANUAL_CSS)
+            browser.setHtml(html)
+        else:
+            browser.setPlainText(text)
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
         buttons.rejected.connect(dlg.reject)
         buttons.clicked.connect(lambda _: dlg.reject())
