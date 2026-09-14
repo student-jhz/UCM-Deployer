@@ -42,7 +42,7 @@ function Invoke-GhApi {
               "-H", "User-Agent: ucm-release",
               "-H", "Accept: application/vnd.github+json")
     if ($BodyFile) {
-        $args += @("-H", "Content-Type: $ContentType", "-d", "@$BodyFile")
+        $args += @("-H", "Content-Type: $ContentType", "--data-binary", "@$BodyFile")
     }
     $args += $Url
     $raw = & curl.exe @args
