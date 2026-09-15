@@ -37,7 +37,7 @@ from ...core.models import VolumeMount
 from ...core.ssh_client import SSHClient
 from ..state import AppContext
 from .common import (ParallelTaskPanel, RemoteDirDialog, combo_ref,
-                     fill_image_combo, image_from_ref)
+                     fill_image_combo, image_from_ref, setup_image_combo)
 
 
 class _PathPickRow(QWidget):
@@ -237,7 +237,8 @@ class ContainerPage(QWidget):
         self.placeholder.setVisible(not self.ctx.selected)
         for s in self.ctx.selected:
             combo = QComboBox()
-            combo.setEditable(False)   # 只能从服务器镜像列表中选择
+            # 弹层限高(10条)滚动；可输入关键字筛选，但只能选中列表项
+            setup_image_combo(combo)
             combo.setMinimumWidth(380)
             self.image_rows[s.id] = combo
             self.image_form.addRow(f"{s.name} ({s.host})", combo)

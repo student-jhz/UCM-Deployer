@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QCompleter,
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
@@ -80,6 +81,44 @@ def combo_ref(combo: QComboBox) -> str:
 def image_from_ref(ref: str) -> DockerImage:
     """由 ref 构造占位 DockerImage（用于预填/新加载的镜像，无大小信息）。"""
     return DockerImage(repository=ref, tag="", image_id=ref)
+
+
+def setup_image_combo(combo: QComboBox, max_visible: int = 10) -> None:
+    """配置镜像下拉框：弹层最多显示 max_visible 条（超出滚动），输入关键字即可筛选。
+
+    仍只能选中列表中的镜像（不可自由输入）：
+    NoInsert 禁止新增项；结束编辑（回车/失焦）时文本未匹配任何列表项则回退当前选择。
+    """
+    combo.setEditable(True)
+    combo.setInsertPolicy(QComboBox.NoInsert)
+    combo.setMaxVisibleItems(max_visible)
+    edit = combo.lineEdit()
+    edit.setPlaceholderText("输入关键字筛选镜像")
+
+    completer = QCompleter(combo.model(), combo)
+    completer.setCompletionMode(QCompleter.PopupCompletion)
+    completer.setCaseSensitivity(Qt.CaseInsensitive)
+    completer.setFilterMode(Qt.MatchContains)
+    completer.setMaxVisibleItems(max_visible)
+    completer.popup().setObjectName("imageFilterPopup")
+    combo.setCompleter(completer)
+
+    def commit() -> None:
+        text = edit.text().strip()
+        idx = combo.findText(text, Qt.MatchContains) if text else -1
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+        elif combo.count() > 0:
+            combo.setCurrentIndex(max(combo.currentIndex(), 0))
+            edit.setText(combo.currentText())
+
+    def pick(text: str) -> None:
+        idx = combo.findText(text)
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+
+    completer.activated.connect(pick)
+    edit.editingFinished.connect(commit)
 
 
 # ============================================================ 任务线程

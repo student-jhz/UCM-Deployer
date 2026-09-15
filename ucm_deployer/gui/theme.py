@@ -110,6 +110,13 @@ QComboBox QAbstractItemView {{
     selection-background-color: {_PRIMARY};
     selection-color: white;
 }}
+/* 镜像下拉的输入筛选补全弹层（独立于 QComboBox 的顶层弹窗） */
+QAbstractItemView#imageFilterPopup {{
+    background: {_CARD};
+    border: 1px solid {_BORDER};
+    selection-background-color: {_PRIMARY};
+    selection-color: white;
+}}
 QTextEdit, QPlainTextEdit {{
     background: {_CARD};
     border: 1px solid {_BORDER};

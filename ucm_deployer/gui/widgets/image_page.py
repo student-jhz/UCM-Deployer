@@ -26,7 +26,8 @@ from ...core.image_builder import (ImageBuildConfig, ImageBuilder,
                                    suggest_tag, upload_image_tar)
 from ...core.models import DockerImage, ServerInfo
 from ..state import AppContext
-from .common import ParallelTaskPanel, combo_ref, fill_image_combo, image_from_ref
+from .common import (ParallelTaskPanel, combo_ref, fill_image_combo,
+                     image_from_ref, setup_image_combo)
 
 
 class ImagePage(QWidget):
@@ -160,7 +161,8 @@ class ImagePage(QWidget):
         self.placeholder.setVisible(not self.ctx.selected)
         for s in self.ctx.selected:
             combo = QComboBox()
-            combo.setEditable(False)   # 只能从服务器镜像列表中选择，不可手输
+            # 弹层限高(10条)滚动；可输入关键字筛选，但只能选中列表项
+            setup_image_combo(combo)
             combo.setMinimumWidth(380)
             combo.currentTextChanged.connect(self._suggest_tag_if_empty)
             self.image_rows[s.id] = combo

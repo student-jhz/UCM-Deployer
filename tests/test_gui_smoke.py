@@ -128,6 +128,43 @@ def test_fill_image_combo(qapp):
     assert "尚未加载" in combo.currentText()
 
 
+def test_image_combo_filter(qapp):
+    """镜像下拉筛选：输入关键字提交后选中首个匹配项；未匹配回退当前选择。"""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QComboBox
+
+    from ucm_deployer.core.models import DockerImage
+    from ucm_deployer.gui.widgets.common import (combo_ref, fill_image_combo,
+                                                 setup_image_combo)
+
+    combo = QComboBox()
+    setup_image_combo(combo)
+    fill_image_combo(combo, [
+        DockerImage("quay.io/ascend/vllm-ascend", "v0.23.0-a3", "id1", "18.2GB"),
+        DockerImage("ucm-vllm", "v0.1", "id2", "5GB"),
+        DockerImage("nginx", "latest", "id3", "100MB"),
+    ])
+    # 可编辑筛选 + 弹层限高 + 补全器包含匹配（不区分大小写）
+    assert combo.isEditable() and combo.maxVisibleItems() == 10
+    assert combo.completer() is not None
+    assert combo.completer().filterMode() == Qt.MatchContains
+
+    # 输入关键字结束编辑 -> 选中首个包含关键字的镜像
+    combo.lineEdit().setText("nginx")
+    combo.lineEdit().editingFinished.emit()
+    assert combo_ref(combo) == "nginx:latest"
+
+    # 输入未匹配文本 -> 回退为当前选择（不可自由输入）
+    combo.lineEdit().setText("no-such-image")
+    combo.lineEdit().editingFinished.emit()
+    assert combo_ref(combo) == "nginx:latest"
+    assert combo.currentText().startswith("nginx:latest")
+
+    # 补全弹层选中项 -> 同步当前选择
+    combo.completer().activated.emit(combo.itemText(0))
+    assert combo_ref(combo) == "ucm-vllm:v0.1"
+
+
 def test_nav_rejected_restores_previous_step(qapp, tmp_path):
     """点击未完成的前置步骤时：提示后导航应停留在当前步骤（不跳走）。"""
     from ucm_deployer.core.models import ServerInfo
@@ -564,9 +601,14 @@ def test_gui_with_mock_server_flow(qapp, tmp_path):
         assert _wait_panel(ip.panel, qapp), "刷新镜像超时"
         combo = ip.image_rows[info.id]
         assert combo.count() >= 2
-        # 镜像只能从服务器列表选择（不可手输），显示大小，ref 存 userData
+        # 镜像可输入关键字筛选但只能选中列表项；弹层限高 10 条
+        from PySide6.QtWidgets import QComboBox
+
         from ucm_deployer.gui.widgets.common import combo_ref
-        assert not combo.isEditable()
+        assert combo.isEditable()
+        assert combo.insertPolicy() == QComboBox.InsertPolicy.NoInsert
+        assert combo.maxVisibleItems() == 10
+        assert combo.completer() is not None
         ref = combo_ref(combo)
         assert ref and ":" in ref
         assert "GB" in combo.currentText()
@@ -590,9 +632,9 @@ def test_gui_with_mock_server_flow(qapp, tmp_path):
         # 配置区在滚动容器内（小窗口可滚动，全屏布局稳定）
         from PySide6.QtWidgets import QScrollArea
         assert cp.findChild(QScrollArea) is not None
-        # 容器页镜像下拉同样只可选择且已自动加载
+        # 容器页镜像下拉同样支持筛选、只能选列表项且已自动加载
         ccombo = cp.image_rows[info.id]
-        assert not ccombo.isEditable()
+        assert ccombo.isEditable() and ccombo.maxVisibleItems() == 10
         assert combo_ref(ccombo) == ctx.images[info.id], "应回显已记录的 UCM 镜像"
         cp.kv_add_row.edit.setText("/mnt/nfs_share")
         cp._kv_add()
