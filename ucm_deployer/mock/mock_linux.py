@@ -183,6 +183,8 @@ class MockLinux:
             out = "".join(f"{i['repo']}\t{i['tag']}\t{i['id']}\t{i['size']}\t{i['created']}\n"
                           for i in self.images.values())
             return 0, out, ""
+        if cmd.startswith("docker save "):
+            return self._docker_save(cmd)
         if cmd.startswith("docker load -i "):
             return self._docker_load(cmd)
         if cmd.startswith("docker pull "):
@@ -215,6 +217,28 @@ class MockLinux:
             return 1, "", f"Error: No such container: {name}\n"
         return 1, "", f"docker: 未模拟的命令: {cmd[:100]}\n"
 
+    def _docker_save(self, cmd: str) -> Tuple[int, str, str]:
+        tokens = shlex.split(cmd)
+        try:
+            i = tokens.index("-o")
+            path = tokens[i + 1]
+            ref = tokens[i + 2]
+        except (ValueError, IndexError):
+            return 1, "", "docker save: 参数错误\n"
+        if ref not in self.images:
+            return 1, "", (f"Error response from daemon: reference does not "
+                           f"exist: {ref}\n")
+        info = self.images[ref]
+        real = self._real(path)
+        os.makedirs(os.path.dirname(real), exist_ok=True)
+        # 内容带 UCM 信息：docker load 时还原（模拟真实 tar 内容决定加载结果）
+        with open(real, "w", encoding="utf-8") as fh:
+            fh.write("MOCK-DOCKER-SAVE\n"
+                     f"ref={info['ref']}\n"
+                     f"has_ucm={int(info['has_ucm'])}\n"
+                     f"ucm_version={info['ucm_version']}\n")
+        return 0, "", ""
+
     def _docker_load(self, cmd: str) -> Tuple[int, str, str]:
         try:
             tar = shlex.split(cmd)[3]
@@ -223,6 +247,22 @@ class MockLinux:
         real = self._real(tar)
         if not os.path.isfile(real):
             return 1, "", f"Error processing tar file {tar}: no such file\n"
+        # 优先识别本模拟器 docker save 导出的内容（保留 UCM 信息）
+        try:
+            content = open(real, encoding="utf-8", errors="replace").read()
+        except OSError:
+            content = ""
+        if content.startswith("MOCK-DOCKER-SAVE"):
+            m = re.search(r"^ref=(\S+)$", content, re.M)
+            if not m:
+                return 1, "", "docker load: 无效的模拟导出内容\n"
+            has = re.search(r"^has_ucm=(\d+)$", content, re.M)
+            ver = re.search(r"^ucm_version=(.*)$", content, re.M)
+            info = self._add_image(
+                m.group(1),
+                has_ucm=bool(has and has.group(1) == "1"),
+                ucm_version=ver.group(1).strip() if ver else "")
+            return 0, f"Loaded image: {info['ref']}\n", ""
         stem = os.path.basename(tar)
         for suffix in (".tar.gz", ".tgz", ".tar"):
             if stem.endswith(suffix):

@@ -410,6 +410,24 @@ def _wait_panel(panel, qapp, timeout=60):
     return not panel.is_running()
 
 
+def _wait_phases(panel, qapp, timeout=180):
+    """等待链式多阶段任务（构建->导出->分发）全部结束：面板需持续空闲 1s。"""
+    import time
+
+    deadline = time.time() + timeout
+    stable = 0
+    while time.time() < deadline:
+        qapp.processEvents()
+        if panel.is_running():
+            stable = 0
+        else:
+            stable += 1
+            if stable >= 20:
+                return True
+        time.sleep(0.05)
+    return False
+
+
 def test_parallel_panel_run_tasks_one_shot(qapp, tmp_path):
     """run_tasks 一次性回调：不残留、忙碌时拒绝且不排入回调。"""
     from ucm_deployer.core.models import ServerInfo
@@ -665,3 +683,70 @@ def test_gui_with_mock_server_flow(qapp, tmp_path):
         assert ctx.scripts.health_checks
     finally:
         server.stop()
+
+
+def test_image_page_build_and_distribute(qapp, tmp_path):
+    """步骤2新流程：仅在构建服务器构建一次 -> 自动分发到第二台服务器。
+
+    校验：构建服务器选择、单行基础镜像下拉、构建后两台服务器均有该镜像
+    （目标服务器镜像带 UCM），ctx.images 两台都已记录。
+    """
+    from ucm_deployer.core.models import ServerInfo
+    from ucm_deployer.core.server_registry import ServerRegistry
+    from ucm_deployer.gui.state import AppContext
+    from ucm_deployer.gui.widgets.image_page import ImagePage
+    from ucm_deployer.mock import mock_server as ms
+
+    a = ms.MockSSHServer(device="ascend", cards=8, root_dir=str(tmp_path / "root-a"))
+    b = ms.MockSSHServer(device="ascend", cards=8, root_dir=str(tmp_path / "root-b"))
+    port_a, port_b = a.start(), b.start()
+    try:
+        ctx = AppContext(ServerRegistry(tmp_path))
+        ia = ServerInfo.create(name="build", host="127.0.0.1", port=port_a,
+                               username="root", password="root")
+        ib = ServerInfo.create(name="target", host="127.0.0.1", port=port_b,
+                               username="root", password="root")
+        for i in (ia, ib):
+            ctx.registry.upsert(i)
+        ctx.selected = [ia, ib]
+
+        ip = ImagePage(ctx)
+        ip.on_enter()
+        assert _wait_panel(ip.panel, qapp), "刷新镜像列表超时"
+        # 构建服务器下拉列出两台；基础镜像只需选构建服务器的（单行）
+        assert ip.build_combo.count() == 2
+        assert len(ip.image_rows) == 1
+        assert ia.id in ip.image_rows
+
+        whl = str(tmp_path / "uc_manager-0.2.1-py3-none-any.whl")
+        open(whl, "wb").write(b"PK fake")
+        ip.ucm_whl_edit.setText(whl)
+        qapp.processEvents()
+        ip._build()
+        # 链式阶段：构建 -> 导出 -> 分发（含结束汇总弹窗，已自动应答）
+        assert _wait_phases(ip.panel, qapp), "构建/导出/分发链式任务超时"
+
+        tag = "vllm-ascend-ucm:v0.23.0-a3"
+        assert ctx.images.get(ia.id) == tag, "构建服务器应记录新镜像"
+        assert ctx.images.get(ib.id) == tag, "目标服务器分发成功后应记录镜像"
+        # 目标服务器 docker 里确实有该镜像且带 UCM
+        assert tag in b.linux.images
+        assert b.linux.images[tag]["has_ucm"]
+        assert b.linux.images[tag]["ucm_version"] == "0.2.1"
+
+        # 手动再分发构建出的镜像：下拉选中它，目标服务器已有 -> 跳过且不报错
+        from PySide6.QtCore import Qt as _Qt
+
+        combo = ip.image_rows[ia.id]
+        for i in range(combo.count()):
+            if str(combo.itemData(i, _Qt.UserRole) or "") == tag:
+                combo.setCurrentIndex(i)
+                break
+        else:
+            raise AssertionError("构建出的镜像应出现在构建服务器的镜像下拉中")
+        ip._distribute_selected()
+        assert _wait_phases(ip.panel, qapp), "手动分发超时"
+        assert ctx.images.get(ib.id) == tag
+    finally:
+        a.stop()
+        b.stop()

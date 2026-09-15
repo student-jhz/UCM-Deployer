@@ -256,3 +256,124 @@ def upload_image_tar(ssh: SSHClient, docker: DockerManager, local_tar: str,
     refs = docker.load_image(remote, on_line=lambda l: log(l))
     progress(100, "docker load 完成")
     return refs
+
+
+# ============================================================ 镜像分发
+def export_image_to_local(ssh: SSHClient, docker: DockerManager, image_ref: str,
+                          progress: Optional[ProgressFn] = None,
+                          log: Optional[LogFn] = None,
+                          cancelled: Optional[CancelledFn] = None) -> Tuple[str, int]:
+    """把服务器上的镜像 docker save 导出并下载到本地临时 tar（分发中转）。
+
+    返回 (本地 tar 路径, 字节数)。调用方负责在分发结束后删除本地临时文件。
+    """
+    progress = progress or (lambda pct, msg: None)
+    log = log or (lambda line: None)
+    ref = image_ref.strip()
+    if not ref:
+        raise ImageBuildError("未指定要分发的镜像")
+    if cancelled is not None and cancelled():
+        raise BuildCancelled("用户取消")
+    if not docker.image_exists(ref):
+        raise ImageBuildError(f"构建服务器上不存在镜像 {ref}，无法分发")
+
+    uid = uuid.uuid4().hex[:8]
+    repo, _, tag = ref.rpartition(":")
+    if not repo or "/" in tag:
+        repo, tag = ref, "latest"
+    remote_tar = f"/tmp/ucm-dist-{tag}-{uid}.tar"
+    progress(5, "docker save 导出镜像")
+    log(f"$ docker save -o {remote_tar} {ref}")
+    res = ssh.exec(f"docker save -o {shq(remote_tar)} {shq(ref)}", timeout=7200)
+    if not res.ok:
+        raise ImageBuildError(
+            f"docker save 失败(退出码 {res.exit_code}): "
+            f"{(res.stderr or res.stdout).strip()[:300]}")
+    try:
+        size = ssh.file_size(remote_tar)
+        log(f"已导出 {remote_tar} ({size / 1e9:.2f} GB)，经本机中转分发给其他服务器…")
+        fd, local_tar = tempfile.mkstemp(prefix="ucm-dist-", suffix=".tar")
+        os.close(fd)
+        progress(10, "下载镜像包到本机（中转）")
+
+        def cb(got: int, total: int) -> None:
+            pct = int(10 + 85 * got / max(total, 1))
+            progress(pct, f"下载镜像包 {got / 1e9:.2f}/{total / 1e9:.2f} GB")
+
+        try:
+            ssh.download_file(remote_tar, local_tar, progress_cb=cb)
+        except Exception:
+            try:
+                os.unlink(local_tar)
+            except OSError:
+                pass
+            raise
+        progress(98, "下载完成")
+        return local_tar, size
+    finally:
+        # 清理远端导出包（尽力而为）
+        try:
+            ssh.exec(f"rm -f {shq(remote_tar)}", timeout=60)
+        except Exception:
+            logger.debug("清理远端导出包失败 %s", remote_tar, exc_info=True)
+
+
+def import_image(ssh: SSHClient, docker: DockerManager, local_tar: str,
+                 image_ref: str,
+                 progress: Optional[ProgressFn] = None,
+                 log: Optional[LogFn] = None,
+                 cancelled: Optional[CancelledFn] = None) -> str:
+    """把本地镜像 tar 上传到服务器并 docker load（服务器已有该镜像则跳过）。
+
+    返回结果描述（用于分发汇总）；加载结果与预期不符时抛出带原因的错误。
+    """
+    progress = progress or (lambda pct, msg: None)
+    log = log or (lambda line: None)
+    ref = image_ref.strip()
+    if not os.path.isfile(local_tar):
+        raise ImageBuildError(f"本地镜像包不存在: {local_tar}")
+    if cancelled is not None and cancelled():
+        raise BuildCancelled("用户取消")
+
+    if docker.image_exists(ref):
+        msg = f"服务器已存在镜像 {ref}，跳过分发"
+        log(msg)
+        progress(100, "已存在，跳过")
+        return msg
+
+    name = os.path.basename(local_tar)
+    remote = f"/tmp/{name}"
+    size = os.path.getsize(local_tar)
+    log(f"上传镜像包 {name} ({size / 1e9:.2f} GB)")
+
+    def cb(sent: int, total: int) -> None:
+        pct = int(5 + 70 * sent / max(total, 1))
+        progress(pct, f"上传镜像包 {sent / 1e9:.2f}/{total / 1e9:.2f} GB")
+
+    progress(5, "上传镜像包")
+    ssh.upload_file(local_tar, remote, progress_cb=cb)
+    try:
+        if cancelled is not None and cancelled():
+            raise BuildCancelled("用户取消")
+        progress(78, "docker load ...")
+        log(f"$ docker load -i {remote}")
+        refs = docker.load_image(remote, on_line=lambda l: log(l))
+        if ref not in refs:
+            raise ImageBuildError(
+                f"docker load 结果异常: 期望 {ref}，实际加载 {refs or '无'}")
+        progress(92, "校验镜像")
+        if not docker.image_exists(ref):
+            raise ImageBuildError(f"docker load 后未在服务器上找到镜像 {ref}")
+        try:
+            ucm = docker.image_ucm_info(ref)
+            log(f"UCM 检查: {ucm}")
+        except Exception as exc:
+            log(f"[警告] UCM 检查失败（不影响分发）: {exc}")
+        progress(100, f"分发完成: {ref}")
+        return f"已加载镜像 {ref} ({size / 1e9:.2f} GB)"
+    finally:
+        # 清理远端镜像包（尽力而为）
+        try:
+            ssh.exec(f"rm -f {shq(remote)}", timeout=60)
+        except Exception:
+            logger.debug("清理远端镜像包失败 %s", remote, exc_info=True)

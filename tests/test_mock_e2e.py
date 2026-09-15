@@ -135,6 +135,46 @@ def test_mock_build_missing_base_fails(ascend_server, tmp_path):
             ImageBuilder(ssh).build(cfg)
 
 
+# ------------------------------------------------------------ 镜像分发
+def test_mock_distribute_image(tmp_path):
+    """构建一次、分发到第二台：export -> import -> 目标服务器有镜像且保留 UCM。"""
+    from ucm_deployer.core.image_builder import export_image_to_local, import_image
+
+    a = ms.MockSSHServer(device="ascend", cards=8, root_dir=str(tmp_path / "root-a"))
+    b = ms.MockSSHServer(device="ascend", cards=8, root_dir=str(tmp_path / "root-b"))
+    a.start()
+    b.start()
+    try:
+        whl = tmp_path / "uc_manager-0.2.1-py3-none-any.whl"
+        whl.write_bytes(b"PK")
+        with make_ssh(a) as ssh_a, make_ssh(b) as ssh_b:
+            dm_a, dm_b = DockerManager(ssh_a), DockerManager(ssh_b)
+            ImageBuilder(ssh_a, dm_a).build(ImageBuildConfig(
+                base_image="quay.io/ascend/vllm-ascend:v0.23.0-a3",
+                image_tag="ucm-img:d1", ucm_whl_local=str(whl), offline=True))
+            assert not dm_b.image_exists("ucm-img:d1")
+
+            # 导出不存在的镜像 -> 明确报错原因
+            with pytest.raises(Exception, match="不存在"):
+                export_image_to_local(ssh_a, dm_a, "no-such:img")
+
+            local_tar, size = export_image_to_local(ssh_a, dm_a, "ucm-img:d1")
+            assert size > 0 and os.path.isfile(local_tar)
+            try:
+                status = import_image(ssh_b, dm_b, local_tar, "ucm-img:d1")
+                assert "已加载" in status
+                assert dm_b.image_exists("ucm-img:d1")
+                ucm = dm_b.image_ucm_info("ucm-img:d1")
+                assert ucm.installed and ucm.version == "0.2.1"
+                # 重复导入 -> 跳过
+                assert "跳过" in import_image(ssh_b, dm_b, local_tar, "ucm-img:d1")
+            finally:
+                os.unlink(local_tar)
+    finally:
+        a.stop()
+        b.stop()
+
+
 # ------------------------------------------------------------ 步骤3: 容器
 def test_mock_create_container_and_check_ucm(ascend_server, tmp_path):
     whl = tmp_path / "uc_manager-0.2.1-py3-none-any.whl"

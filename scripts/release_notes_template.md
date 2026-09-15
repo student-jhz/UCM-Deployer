@@ -11,7 +11,7 @@ UCM Deployer {VERSION} —— UCM 一键部署工具（Windows 桌面版）
 五步向导：**服务器管理 → 镜像构建 → 容器创建 → 部署配置 → 拉起服务**
 
 - **服务器管理**：SSH 登录信息本地加密保存/复用；`npu-smi` / `nvidia-smi` 设备探测与多机型号一致性校验
-- **镜像构建**：基础镜像选择或上传 tar 包 `docker load`；在线/离线（wrapt whl）安装 UCM whl，可选 ucm-toolkit 源码安装，一键构建带 UCM 的 vllm-ascend/vllm/sglang 镜像；已有 UCM 镜像可校验后直接跳过
+- **镜像构建与分发**：选一台构建服务器，基础镜像选择或上传 tar 包 `docker load`；在线/离线（wrapt whl）安装 UCM whl，可选 ucm-toolkit 源码安装，一键构建带 UCM 的 vllm-ascend/vllm/sglang 镜像；**构建一次自动分发到其他服务器**（每台独立进度/日志，结束汇总成功/失败及原因）；已有 UCM 镜像可校验后直接跳过
 - **容器创建**：自动识别卡数生成 Ascend（davinci 全量设备 + 驱动挂载）/ NVIDIA（--gpus all）的 `docker run` 命令；kvcache 挂载目录共享文件系统校验（NFS/3FS 等）；模型只读映射；命令可编辑后执行
 - **部署配置**：PD 混部 / PD 分离拓扑（DP×TP 卡数校验、组内 TP 一致性）；卡资源占用检查；自动生成含 UCM `--kv-transfer-config` 的 vLLM/SGLang 启动脚本（mooncake master/json、ray 集群、负载均衡、UCM 配置模板），全部可编辑
 - **拉起服务**：脚本部署到容器、按依赖顺序拉起、`curl /health` 健康检查、容器日志跟踪、一键停止

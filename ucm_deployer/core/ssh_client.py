@@ -210,6 +210,45 @@ class SSHClient:
                 except Exception:
                     pass
 
+    def download_file(self, remote_path: str, local_path: str,
+                      progress_cb: Optional[Callable[[int, int], None]] = None) -> None:
+        client = self._ensure()
+        sftp = None
+        try:
+            sftp = client.open_sftp()
+            if progress_cb is None:
+                sftp.get(remote_path, local_path)
+            else:
+                sftp.get(remote_path, local_path, callback=progress_cb)
+        except SSHError:
+            raise
+        except Exception as exc:
+            raise SSHError(f"下载文件失败 {remote_path} -> {local_path}: {exc}") from exc
+        finally:
+            if sftp is not None:
+                try:
+                    sftp.close()
+                except Exception:
+                    pass
+
+    def file_size(self, remote_path: str) -> int:
+        """获取远端文件大小（字节），用于下载/传输进度。"""
+        client = self._ensure()
+        sftp = None
+        try:
+            sftp = client.open_sftp()
+            return int(sftp.stat(remote_path).st_size)
+        except SSHError:
+            raise
+        except Exception as exc:
+            raise SSHError(f"获取远端文件大小失败 {remote_path}: {exc}") from exc
+        finally:
+            if sftp is not None:
+                try:
+                    sftp.close()
+                except Exception:
+                    pass
+
     def write_file(self, remote_path: str, content: str) -> None:
         """通过 SFTP 写远端文本文件（utf-8）。"""
         client = self._ensure()

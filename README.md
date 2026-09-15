@@ -9,7 +9,7 @@
 ```
 
 - **步骤1 服务器管理**：SSH 登录信息本地加密保存/复用；选择本次部署的服务器；`npu-smi`/`nvidia-smi` 设备探测与多机型号一致性校验
-- **步骤2 镜像构建**：服务器基础镜像选择，或上传 tar 包 `docker load`；上传本地 UCM whl（离线模式含 wrapt whl、可选 ucm-toolkit 源码安装）自动生成 Dockerfile 并 `docker build` 成带 UCM 的引擎镜像；已有 UCM 镜像可校验后跳过
+- **步骤2 镜像构建与分发**：选一台构建服务器，基础镜像从其 `docker images` 选择（或上传 tar 包 `docker load`）；上传本地 UCM whl（离线模式含 wrapt whl、可选 ucm-toolkit 源码安装）自动生成 Dockerfile 并 `docker build` 成带 UCM 的引擎镜像，**构建一次后自动分发到其他服务器**（docker save → 中转 → 各服务器 docker load，每台独立日志与汇总）；已有 UCM 镜像可校验后跳过构建
 - **步骤3 容器创建**：自动识别卡数生成全量 `docker run`（Ascend 全部 davinci 设备 + 驱动挂载 / NVIDIA `--gpus all`）；kvcache 挂载目录共享文件系统校验；模型只读映射；命令可编辑后执行
 - **步骤4 部署配置**：PD 混部 / PD 分离拓扑（每节点 DP×TP 卡数校验）；卡资源占用检查；自动生成含 UCM `--kv-transfer-config` 的 vllm/sglang 启动脚本（mooncake master/mooncake.json/ray 集群/负载均衡/UCM 配置模板），**全部可编辑**
 - **步骤5 拉起服务**：脚本 `docker cp` 落位、按依赖顺序拉起、`curl /health` 健康检查、容器日志跟踪、一键停止
