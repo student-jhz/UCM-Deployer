@@ -218,6 +218,17 @@ UCM-Deployer/
 3. **兜底重试**：启动器对子进程崩溃/挂起（退出码非 0/1 或超时 180s）自动重试至多 3 次；真实测试失败（退出码 1）立即报错不重试。
 
 **成效**：4/4 轮全量稳定通过（11~31s/轮，此前分钟级且随机失败）；父进程 123 通过 + GUI 子进程 19 通过，测试语义无损失（同命令语义、同断言）。
+
+**补充（cryptography 版本实验）**：并行会话曾以 `cryptography<46` 钉版尝试规避同类崩溃；本机对照实验结论相反——45.0.7 + PySide6 同进程必崩（子进程 3/3 崩溃于流程测试），50.0.1 稳定（3/3 通过）。即该冲突随 Anaconda/Qt/cryptography 组合而变，**无法用版本钉死**；已放开钉版并以「进程隔离 + SSH 替身」作为根治手段（不同环境的版本表现差异记录于 requirements.txt 注释）。
+
+### 8.6 并行会话整合（v0.1.7 rebase）
+
+远端出现另一会话的并行提交（单机构建+镜像分发、镜像下拉筛选、`--data-binary` 上传修复、cryptography 钉版）。整合处理：
+
+- rebase 到远端之上（`--ours/--theirs` 方向修正：rebase 中 ours=远端侧，曾误取导致父进程内联旧 GUI 测试复现崩溃，已恢复启动器并 amend）；
+- 移植其两个新 GUI 测试（筛选、构建+分发）至 test_gui_all.py 并改造为 SSH 替身驱动（原版用双 MockSSHServer=真实 paramiko，正是崩溃组合）；
+- 替身补齐其新增的 `download_file`/`file_size` 接口；
+- 采纳其 `--data-binary` 上传修复（这正是此前 Release 资产被截断为 25.3MB 的根因）；推翻其 cryptography<46 钉版（见 8.5 补充）。
 | 4 | topology + command_generator | ⬜ |
 | 5 | mock server + CLI + e2e | ⬜ |
 | 6 | GUI | ⬜ |

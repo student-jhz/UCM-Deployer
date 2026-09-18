@@ -107,6 +107,18 @@ class LocalScriptSSH:
             size = os.path.getsize(local_path)
             progress_cb(size, size)
 
+    def download_file(self, remote_path, local_path, progress_cb=None):
+        import shutil
+
+        shutil.copyfile(self._linux()._real(remote_path), local_path)
+        if progress_cb:
+            size = os.path.getsize(local_path)
+            progress_cb(size, size)
+
+    def file_size(self, remote_path):
+        import os
+        return os.path.getsize(self._linux()._real(remote_path))
+
     def write_file(self, remote_path, content):
         import os
 
@@ -648,6 +660,121 @@ def test_deploy_page_sync_edits(qapp, tmp_path):
     assert ctx.scripts.scripts[0].content == "# user edited content\n"
 
 
+def test_image_combo_filter(qapp):
+    """镜像下拉筛选：输入关键字提交后选中首个匹配项；未匹配回退当前选择。"""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QComboBox
+
+    from ucm_deployer.core.models import DockerImage
+    from ucm_deployer.gui.widgets.common import (combo_ref, fill_image_combo,
+                                                 setup_image_combo)
+
+    combo = QComboBox()
+    setup_image_combo(combo)
+    fill_image_combo(combo, [
+        DockerImage("quay.io/ascend/vllm-ascend", "v0.23.0-a3", "id1", "18.2GB"),
+        DockerImage("ucm-vllm", "v0.1", "id2", "5GB"),
+        DockerImage("nginx", "latest", "id3", "100MB"),
+    ])
+    # 可编辑筛选 + 弹层限高 + 补全器包含匹配（不区分大小写）
+    assert combo.isEditable() and combo.maxVisibleItems() == 10
+    assert combo.completer() is not None
+    assert combo.completer().filterMode() == Qt.MatchContains
+
+    # 输入关键字结束编辑 -> 选中首个包含关键字的镜像
+    combo.lineEdit().setText("nginx")
+    combo.lineEdit().editingFinished.emit()
+    assert combo_ref(combo) == "nginx:latest"
+
+    # 输入未匹配文本 -> 回退为当前选择（不可自由输入）
+    combo.lineEdit().setText("no-such-image")
+    combo.lineEdit().editingFinished.emit()
+    assert combo_ref(combo) == "nginx:latest"
+    assert combo.currentText().startswith("nginx:latest")
+
+    # 补全弹层选中项 -> 同步当前选择
+    combo.completer().activated.emit(combo.itemText(0))
+    assert combo_ref(combo) == "ucm-vllm:v0.1"
+
+
+def _wait_phases(panel, qapp, timeout=180):
+    """等待链式多阶段任务（构建->导出->分发）全部结束：面板需持续空闲 1s。"""
+    import time
+
+    deadline = time.time() + timeout
+    stable = 0
+    while time.time() < deadline:
+        qapp.processEvents()
+        if panel.is_running():
+            stable = 0
+        else:
+            stable += 1
+            if stable >= 20:
+                return True
+        time.sleep(0.05)
+    return False
+
+
+def test_image_page_build_and_distribute(qapp, tmp_path):
+    """步骤2新流程：仅在构建服务器构建一份数据 -> 自动分发到第二台服务器。
+
+    使用 SSH 替身（LocalScriptSSH+MockLinux，按 server.id 各自独立状态），
+    断言：构建服务器选择、单行基础镜像下拉、构建后两台服务器均有该镜像
+    （目标服务器镜像含 UCM），ctx.images 两台都已记录。
+    """
+    from ucm_deployer.core.models import ServerInfo
+    from ucm_deployer.core.server_registry import ServerRegistry
+    from ucm_deployer.gui.state import AppContext
+    from ucm_deployer.gui.widgets.image_page import ImagePage
+
+    ctx = AppContext(ServerRegistry(tmp_path))
+    ia = ServerInfo.create(name="build", host="127.0.0.1", port=1,
+                           username="root", password="root")
+    ib = ServerInfo.create(name="target", host="127.0.0.2", port=1,
+                           username="root", password="root")
+    for i in (ia, ib):
+        ctx.registry.upsert(i)
+    ctx.selected = [ia, ib]
+
+    ip = ImagePage(ctx)
+    ip.on_enter()
+    assert _wait_panel(ip.panel, qapp), "刷新镜像列表超时"
+    # 构建服务器下拉列出两台；基础镜像只需选构建服务器的（单行）
+    assert ip.build_combo.count() == 2
+    assert len(ip.image_rows) == 1
+    assert ia.id in ip.image_rows
+
+    whl = str(tmp_path / "uc_manager-0.2.1-py3-none-any.whl")
+    open(whl, "wb").write(b"PK fake")
+    ip.ucm_whl_edit.setText(whl)
+    qapp.processEvents()
+    ip._build()
+    # 链式阶段：构建 -> 导出 -> 分发（含结束汇总弹窗，已自动应答）
+    assert _wait_phases(ip.panel, qapp), "构建/导出/分发链式任务超时"
+
+    tag = "vllm-ascend-ucm:v0.23.0-a3"
+    assert ctx.images.get(ia.id) == tag, "构建服务器应记录新镜像"
+    assert ctx.images.get(ib.id) == tag, "目标服务器分发成功后应记录镜像"
+    # 目标服务器的 docker 里确实有该镜像且含 UCM（替身状态按 server.id 区分）
+    assert tag in _FAKE_LINUX[ib.id].images
+    assert _FAKE_LINUX[ib.id].images[tag]["has_ucm"]
+    assert _FAKE_LINUX[ib.id].images[tag]["ucm_version"] == "0.2.1"
+
+    # 手动再分发构建出的镜像：下拉选中它，目标服务器已有 -> 跳过且不报错
+    from PySide6.QtCore import Qt as _Qt
+
+    combo = ip.image_rows[ia.id]
+    for i in range(combo.count()):
+        if str(combo.itemData(i, _Qt.UserRole) or "") == tag:
+            combo.setCurrentIndex(i)
+            break
+    else:
+        raise AssertionError("构建出的镜像应出现在构建服务器的镜像下拉")
+    ip._distribute_selected()
+    assert _wait_phases(ip.panel, qapp), "手动分发超时"
+    assert ctx.images.get(ib.id) == tag
+
+
 def test_gui_full_flow_with_fake_ssh(qapp, tmp_path):
     """GUI 页面 + ParallelTaskPanel 真实线程 + SSH 替身全链路。
 
@@ -689,9 +816,14 @@ def test_gui_full_flow_with_fake_ssh(qapp, tmp_path):
     assert _wait_panel(ip.panel, qapp), "刷新镜像超时"
     combo = ip.image_rows[info.id]
     assert combo.count() >= 2
-    # 镜像只能从服务器列表选择（不可手输），显示大小，ref 存 userData
+    # 镜像可输入关键字筛选但只能选中列表项；弹层限高 10 条
+    from PySide6.QtWidgets import QComboBox
+
     from ucm_deployer.gui.widgets.common import combo_ref
-    assert not combo.isEditable()
+    assert combo.isEditable()
+    assert combo.insertPolicy() == QComboBox.InsertPolicy.NoInsert
+    assert combo.maxVisibleItems() == 10
+    assert combo.completer() is not None
     ref = combo_ref(combo)
     assert ref and ":" in ref
     assert "GB" in combo.currentText()
@@ -715,9 +847,9 @@ def test_gui_full_flow_with_fake_ssh(qapp, tmp_path):
     # 配置区在滚动容器内（小窗口可滚动，全屏布局稳定）
     from PySide6.QtWidgets import QScrollArea
     assert cp.findChild(QScrollArea) is not None
-    # 容器页镜像下拉同样只可选择且已自动加载
+    # 容器页镜像下拉同样支持筛选、只能选列表项且已自动加载
     ccombo = cp.image_rows[info.id]
-    assert not ccombo.isEditable()
+    assert ccombo.isEditable() and ccombo.maxVisibleItems() == 10
     assert combo_ref(ccombo) == ctx.images[info.id], "应回显已记录的 UCM 镜像"
     cp.kv_add_row.edit.setText("/mnt/nfs_share")
     cp._kv_add()

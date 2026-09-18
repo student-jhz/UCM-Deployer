@@ -1,4 +1,7 @@
 paramiko>=3.4,<6
-cryptography>=3.3,<46
+# cryptography 不锁定版本：本机实测 45.x + PySide6 同进程会原生崩溃(0xC0000005)，
+# 50.x 稳定；不同 Anaconda/Qt 组合表现相反，无法用版本钉死。
+# 测试崩溃已通过进程隔离+SSH替身根治（见 tests/test_gui_smoke.py 与
+# docs/architecture.md §8.5），应用侧如遇原生崩溃请优先参考该文档。
 PySide6>=6.4,<6.9
 markdown>=3.4
