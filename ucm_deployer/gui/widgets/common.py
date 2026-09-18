@@ -195,6 +195,10 @@ class ParallelTaskPanel(QWidget):
 
     finished_all = Signal(bool)
 
+    # 已脱离父对象的滞后线程：防止被部件树销毁导致
+    # "QThread destroyed while running" / C 层 abort
+    _ORPHANS: List[ServerTaskThread] = []
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._threads: List[ServerTaskThread] = []
@@ -311,14 +315,22 @@ class ParallelTaskPanel(QWidget):
             self.finished_all.connect(handler)
         return self.start(tasks, title)
 
-    def shutdown(self, timeout_ms: int = 2000) -> None:
-        """请求取消并等待线程结束（关闭窗口时使用，避免 QThread 析构崩溃）。"""
+    def shutdown(self, timeout_ms: int = 3000) -> None:
+        """请求取消并等待线程结束（关闭窗口/测试清理时使用）。
+
+        超时线程【不】terminate：TerminateThread 会破坏 paramiko/C 运行时
+        状态，曾引发进程级 "Fatal Python error: Aborted"。改为脱离父对象
+        挂入类级 _ORPHANS（防随部件树销毁），待其自然结束后自行清理。
+        """
         for t in self._threads:
             t.request_cancel()
         for t in self._threads:
             if not t.wait(timeout_ms):
-                t.terminate()
-                t.wait(1000)
+                logger.warning("任务线程 %s 未在 %sms 内结束，脱离托管等待自然结束",
+                               t.server.name, timeout_ms)
+                t.setParent(None)
+                t.finished.connect(t.deleteLater)
+                ParallelTaskPanel._ORPHANS.append(t)
 
     # ------------------------------------------------------------ 内部
     def _cancel(self) -> None:

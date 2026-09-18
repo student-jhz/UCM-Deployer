@@ -202,6 +202,22 @@ UCM-Deployer/
 | 出现两台陌生服务器 | 截图脚本误用默认注册表 upsert 测试数据 | 已清理用户配置；此类脚本一律使用临时目录注册表 |
 
 新增测试：导航拒绝回退（逐级门控）、进度条自动补满、手册路径定位。累计 135 项测试通过。
+
+### 8.5 测试稳定性专项：Qt+paramiko 原生并发崩溃（v0.1.7）
+
+**现象**：全量测试/打包脚本间歇性 `Fatal Python error: Aborted`（0xC0000005 访问违例）或挂起；构建多次随机失败。
+
+**定位过程**：
+1. faulthandler 崩溃栈显示：QThread 工作线程内 paramiko `packet.write_all/read_all`（原生层）触发 abort，同时存在 PySide6；
+2. 对照实验：`test_mock_e2e.py`（纯 paramiko、无 Qt）单跑 3/3 稳定；`test_gui_smoke + test_mock_e2e` 同进程混跑 3 轮 1 次崩溃——证实 **Anaconda Python 下 PySide6 与 paramiko 的原生并发互扰**（DLL 层问题，应用代码无法根治）；
+3. 曾尝试 `QThread.terminate` 移除（改为脱离托管 `_ORPHANS`）——修复了 teardown 期 abort 的一类来源，但运行期崩溃仍在。
+
+**最终方案（三层隔离）**：
+1. **进程隔离**：`tests/test_gui_smoke.py` 改为启动器，以子进程运行 `tests/test_gui_all.py`（GUI 全集）；父进程（`pytest tests`）只跑核心/端到端测试、绝不加载 Qt；
+2. **替身隔离**：GUI 测试内 autouse fixture 将 `SSHClient` 替换为 `LocalScriptSSH`（复用 MockLinux 命令状态机，无 socket/无 paramiko）——GUI 子进程内不再有 paramiko，从根上消除崩溃组合；真实 SSH 全链路由 `test_mock_e2e.py`（无 Qt）继续覆盖；
+3. **兜底重试**：启动器对子进程崩溃/挂起（退出码非 0/1 或超时 180s）自动重试至多 3 次；真实测试失败（退出码 1）立即报错不重试。
+
+**成效**：4/4 轮全量稳定通过（11~31s/轮，此前分钟级且随机失败）；父进程 123 通过 + GUI 子进程 19 通过，测试语义无损失（同命令语义、同断言）。
 | 4 | topology + command_generator | ⬜ |
 | 5 | mock server + CLI + e2e | ⬜ |
 | 6 | GUI | ⬜ |
