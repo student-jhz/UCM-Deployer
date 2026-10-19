@@ -1,15 +1,13 @@
 # -*- coding: utf-8 -*-
-"""paramiko 的轻量封装。
+"""paramiko 的轻量封装：连接、命令执行（阻塞/流式）、SFTP 上传下载。
 
-设计目标：
-- 单个远端服务器的连接、命令执行（阻塞/流式）、SFTP 上传下载；
-- 无真实服务器时可用 tests/fake_ssh.py 或 ucm_deployer.mock 完整模拟。
+单台服务器一个实例；close() 会等待 transport 线程退出，避免残留线程
+在进程收尾阶段触发 Windows 上的 access violation。
 """
 from __future__ import annotations
 
 import time
-from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, Optional
 
 import paramiko
 
@@ -53,7 +51,7 @@ class SSHClient:
             kwargs["password"] = self.server.password
         try:
             client.connect(**kwargs)
-        except Exception as exc:  # paramiko 抛出的异常类型较多，统一转换
+        except Exception as exc:
             client.close()
             raise SSHError(f"连接 {self.server.endpoint} 失败: {exc}") from exc
         try:
@@ -74,10 +72,20 @@ class SSHClient:
 
     def close(self) -> None:
         if self._client is not None:
+            transport = None
+            try:
+                transport = self._client.get_transport()
+            except Exception:
+                transport = None
             try:
                 self._client.close()
             finally:
                 self._client = None
+            if transport is not None:
+                try:
+                    transport.join(timeout=3.0)
+                except Exception:
+                    pass
 
     def __enter__(self) -> "SSHClient":
         self.connect()
@@ -146,7 +154,7 @@ class SSHClient:
                     timeout: Optional[float] = None) -> CommandResult:
         """执行远端命令，按行流式回调（stderr 合并进 stdout 流）。"""
         chan = self._open_channel()
-        chunks: List[str] = []
+        chunks = []
         try:
             chan.set_combine_stderr(True)
             chan.exec_command(cmd)
@@ -159,7 +167,7 @@ class SSHClient:
                 if on_line is not None:
                     try:
                         on_line(text.rstrip("\r\n"))
-                    except Exception:  # 回调异常不中断命令
+                    except Exception:
                         logger.exception("on_line 回调异常")
 
             while True:
@@ -189,12 +197,14 @@ class SSHClient:
         return CommandResult(command=cmd, exit_code=code, stdout="".join(chunks))
 
     # ------------------------------------------------------------ 文件
+    def _sftp(self):
+        return self._ensure().open_sftp()
+
     def upload_file(self, local_path: str, remote_path: str,
                     progress_cb: Optional[Callable[[int, int], None]] = None) -> None:
-        client = self._ensure()
         sftp = None
         try:
-            sftp = client.open_sftp()
+            sftp = self._sftp()
             if progress_cb is None:
                 sftp.put(local_path, remote_path)
             else:
@@ -212,10 +222,9 @@ class SSHClient:
 
     def download_file(self, remote_path: str, local_path: str,
                       progress_cb: Optional[Callable[[int, int], None]] = None) -> None:
-        client = self._ensure()
         sftp = None
         try:
-            sftp = client.open_sftp()
+            sftp = self._sftp()
             if progress_cb is None:
                 sftp.get(remote_path, local_path)
             else:
@@ -232,11 +241,9 @@ class SSHClient:
                     pass
 
     def file_size(self, remote_path: str) -> int:
-        """获取远端文件大小（字节），用于下载/传输进度。"""
-        client = self._ensure()
         sftp = None
         try:
-            sftp = client.open_sftp()
+            sftp = self._sftp()
             return int(sftp.stat(remote_path).st_size)
         except SSHError:
             raise
@@ -250,11 +257,9 @@ class SSHClient:
                     pass
 
     def write_file(self, remote_path: str, content: str) -> None:
-        """通过 SFTP 写远端文本文件（utf-8）。"""
-        client = self._ensure()
         sftp = None
         try:
-            sftp = client.open_sftp()
+            sftp = self._sftp()
             with sftp.open(remote_path, "wb") as fh:
                 fh.write(content.encode("utf-8"))
         except SSHError:
@@ -269,10 +274,9 @@ class SSHClient:
                     pass
 
     def read_file(self, remote_path: str) -> str:
-        client = self._ensure()
         sftp = None
         try:
-            sftp = client.open_sftp()
+            sftp = self._sftp()
             with sftp.open(remote_path, "rb") as fh:
                 return fh.read().decode("utf-8", errors="replace")
         except SSHError:
@@ -291,4 +295,5 @@ class SSHClient:
 
         res = self.exec(f"mkdir -p {shq(path)} && test -d {shq(path)}")
         if not res.ok:
-            raise SSHError(f"创建远端目录失败 {path}: {res.stderr.strip() or res.stdout.strip()}")
+            raise SSHError(
+                f"创建远端目录失败 {path}: {res.stderr.strip() or res.stdout.strip()}")

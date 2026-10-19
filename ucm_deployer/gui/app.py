@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-"""GUI 应用入口。"""
+"""GUI 应用入口（QApplication 初始化 + 主题 + 主窗口循环）。"""
 from __future__ import annotations
 
 import sys
 
 
-def run(argv=None) -> int:
+def run() -> int:
     from PySide6.QtWidgets import QApplication
 
     from ..utils.log import setup_logging
@@ -13,16 +13,12 @@ def run(argv=None) -> int:
     from .theme import apply_light_theme, make_app_icon
 
     setup_logging()
-    app = QApplication(argv if argv is not None else sys.argv)
-    app.setApplicationName("UCM Deployer")
-    app.setOrganizationName("UCM-Deployer")
+    app = QApplication(sys.argv)
     app.setStyle("Fusion")
-    apply_light_theme(app)
+    app.setApplicationName("UCM-Deployer")
     app.setWindowIcon(make_app_icon())
+    apply_light_theme(app)
+
     win = MainWindow()
     win.show()
     return app.exec()
-
-
-if __name__ == "__main__":
-    sys.exit(run())

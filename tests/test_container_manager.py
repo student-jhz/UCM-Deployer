@@ -5,23 +5,20 @@ from ucm_deployer.core.container_manager import (
     ContainerCreateConfig,
     ContainerManager,
     check_shared_fs,
+    evaluate_shared_fs,
 )
 from ucm_deployer.core.models import DeviceType, ServerInfo, VolumeMount
 from ucm_deployer.core.shell import flatten_command
 from ucm_deployer.core.ssh_client import SSHClient
 
 
-def make_ssh(fake_ssh, name="s1"):
-    ssh = SSHClient(ServerInfo.create(name=name, host="127.0.0.1"))
-    ssh.connect()
-    return ssh
-
-
 def make_cm(fake_ssh):
-    ssh = make_ssh(fake_ssh)
+    ssh = SSHClient(ServerInfo.create(name="s", host="127.0.0.1"))
+    ssh.connect()
     return ContainerManager(ssh), ssh
 
 
+# ============================================================ Ascend 模板
 def test_ascend_run_command(fake_ssh):
     cm, _ = make_cm(fake_ssh)
     cfg = ContainerCreateConfig(
@@ -39,12 +36,13 @@ def test_ascend_run_command(fake_ssh):
     assert "--shm-size 512g" in cmd
     for i in range(8):
         assert f"--device /dev/davinci{i}" in cmd
-    assert "--device /dev/davinci8" not in cmd
+    assert "--device /dev/davinci8" not in cmd       # 不超过实际卡数
     assert "--device /dev/davinci_manager" in cmd
     assert "--device /dev/devmm_svm" in cmd
     assert "--device /dev/hisi_hdc" in cmd
     assert "-v /usr/local/dcmi:/usr/local/dcmi" in cmd
-    assert "-v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi" in cmd
+    assert "-v /usr/local/Ascend/driver/lib64/:/usr/local/Ascend/driver/lib64/" in cmd
+    assert "-v /etc/ascend_install.info:/etc/ascend_install.info" in cmd
     assert "-v /mnt/nfs_share:/mnt/nfs_share" in cmd
     assert "-v /data/models/DeepSeek:/models:ro" in cmd
     assert "-v /home/user/logs:/logs" in cmd
@@ -56,6 +54,7 @@ def test_ascend_run_command(fake_ssh):
     assert flat.startswith("docker run -itd --name ucm-node1")
 
 
+# ============================================================ NVIDIA 模板
 def test_nvidia_run_command(fake_ssh):
     cm, _ = make_cm(fake_ssh)
     cfg = ContainerCreateConfig(
@@ -65,123 +64,116 @@ def test_nvidia_run_command(fake_ssh):
         model_mount=VolumeMount("/data/models", "/models", True),
     )
     cmd = cm.generate_run_command(cfg)
+    assert "--runtime nvidia" in cmd
     assert "--gpus all" in cmd
+    assert "-p 8000:8000" in cmd
     assert "--ipc=host" in cmd
+    assert "--net=host" not in cmd    # NVIDIA 模板用端口映射而非 host 网络
     assert "davinci" not in cmd
     assert "npu-smi" not in cmd
 
 
+def test_nvidia_custom_ports(fake_ssh):
+    cm, _ = make_cm(fake_ssh)
+    cfg = ContainerCreateConfig(
+        image="vllm/vllm-openai:latest", name="gpu2",
+        device_type=DeviceType.NVIDIA,
+        ports=["9000:8000", "9001:8001"],
+    )
+    cmd = cm.generate_run_command(cfg)
+    assert "-p 9000:8000" in cmd
+    assert "-p 9001:8001" in cmd
+
+
+# ============================================================ 校验与异常
 def test_run_command_name_quoting(fake_ssh):
     cm, _ = make_cm(fake_ssh)
-    cfg = ContainerCreateConfig(image="img:1", name="ok.name-1",
-                                device_type=DeviceType.NVIDIA)
-    cmd = cm.generate_run_command(cfg)
+    cmd = cm.generate_run_command(ContainerCreateConfig(
+        image="img:1", name="ok.name-1", device_type=DeviceType.NVIDIA))
     assert "--name ok.name-1" in cmd
 
 
 def test_run_command_invalid_name(fake_ssh):
     cm, _ = make_cm(fake_ssh)
-    cfg = ContainerCreateConfig(image="img:1", name="bad name",
-                                device_type=DeviceType.NVIDIA)
     with pytest.raises(Exception):
-        cm.generate_run_command(cfg)
+        cm.generate_run_command(ContainerCreateConfig(
+            image="img:1", name="bad name", device_type=DeviceType.NVIDIA))
 
 
 def test_run_command_relative_kv_dir_rejected(fake_ssh):
     cm, _ = make_cm(fake_ssh)
-    cfg = ContainerCreateConfig(image="img:1", name="c1",
-                                device_type=DeviceType.NVIDIA,
-                                kv_cache_dirs=["relative/path"])
     with pytest.raises(Exception):
-        cm.generate_run_command(cfg)
+        cm.generate_run_command(ContainerCreateConfig(
+            image="img:1", name="c1", device_type=DeviceType.NVIDIA,
+            kv_cache_dirs=["relative/path"]))
+
+
+def test_unknown_device_generic(fake_ssh):
+    cm, _ = make_cm(fake_ssh)
+    cmd = cm.generate_run_command(ContainerCreateConfig(
+        image="img:1", name="c1"))
+    assert "--net=host" in cmd and "--shm-size 512g" in cmd
 
 
 def test_create_executes_flattened(fake_ssh):
     cm, ssh = make_cm(fake_ssh)
     ssh._client.add(r"^docker run ", stdout="container-id-777\n")
-    cfg = ContainerCreateConfig(image="img:1", name="c1",
-                                device_type=DeviceType.NVIDIA, device_count=2)
-    cmd = cm.generate_run_command(cfg)
+    cmd = cm.generate_run_command(ContainerCreateConfig(
+        image="img:1", name="c1", device_type=DeviceType.NVIDIA, device_count=2))
     res = cm.create(cmd)
     assert res.ok
     executed = ssh._client.channels[-1].executed_command
-    assert "\n" not in executed
-    assert "\\" not in executed
+    assert "\n" not in executed and "\\" not in executed
     assert executed.startswith("docker run -itd --name c1")
-
-
-def test_detect_ascend_device_count(fake_ssh):
-    cm, ssh = make_cm(fake_ssh)
-    ssh._client.add(r"ls -1 /dev/ .*grep -cE.*davinci", stdout="16\n")
-    assert cm.detect_ascend_device_count() == 16
 
 
 def test_list_host_dirs(fake_ssh):
     cm, ssh = make_cm(fake_ssh)
     ssh._client.add(r"find / -maxdepth 1", stdout="/bin\n/data\n/home\n/models\n/opt\n/root\n")
-    dirs = cm.list_host_dirs("/")
-    assert dirs == ["/bin", "/data", "/home", "/models", "/opt", "/root"]
+    assert cm.list_host_dirs("/") == ["/bin", "/data", "/home", "/models", "/opt", "/root"]
 
 
+# ============================================================ 文件系统校验
 def _add_df(ssh, path, source, fstype, ok=True):
+    import re
+
     ssh._client.add(rf"df --output=source,fstype {re.escape(path)}",
                     stdout=f"Filesystem Type\n{source} {fstype}\n" if ok else "",
                     exit_code=0 if ok else 1)
 
 
-import re  # noqa: E402
-
-
-def test_shared_fs_single_server_local(fake_ssh):
-    ssh1 = make_ssh(fake_ssh, "s1")
-    _add_df(ssh1, "/mnt/cache1", "/dev/sda1", "ext4")
-    _add_df(ssh1, "/mnt/cache2", "/dev/sda1", "ext4")
-    report = check_shared_fs({"s1": ssh1}, ["/mnt/cache1", "/mnt/cache2"])
+def test_shared_fs_local_warns(fake_ssh):
+    _, ssh = make_cm(fake_ssh)
+    _add_df(ssh, "/mnt/cache1", "/dev/sda1", "ext4")
+    _add_df(ssh, "/mnt/cache2", "/dev/sda1", "ext4")
+    report = check_shared_fs(ssh, ["/mnt/cache1", "/mnt/cache2"])
     assert report.ok
     assert report.warnings  # 本地磁盘给出提示
 
 
-def test_shared_fs_single_server_mismatch(fake_ssh):
-    ssh1 = make_ssh(fake_ssh, "s1")
-    _add_df(ssh1, "/mnt/a", "/dev/sda1", "ext4")
-    _add_df(ssh1, "/mnt/b", "/dev/sdb1", "xfs")
-    report = check_shared_fs({"s1": ssh1}, ["/mnt/a", "/mnt/b"])
+def test_shared_fs_nfs_ok(fake_ssh):
+    _, ssh = make_cm(fake_ssh)
+    _add_df(ssh, "/mnt/nfs", "nfsserver:/export", "nfs4")
+    report = check_shared_fs(ssh, ["/mnt/nfs"])
+    assert report.ok
+    assert "网络文件系统" in report.message
+
+
+def test_shared_fs_mismatch_fails(fake_ssh):
+    _, ssh = make_cm(fake_ssh)
+    _add_df(ssh, "/mnt/a", "/dev/sda1", "ext4")
+    _add_df(ssh, "/mnt/b", "/dev/sdb1", "xfs")
+    report = check_shared_fs(ssh, ["/mnt/a", "/mnt/b"])
     assert not report.ok
     assert "不在同一文件系统" in report.message
 
 
-def test_shared_fs_multi_server_nfs_ok(fake_ssh):
-    ssh1 = make_ssh(fake_ssh, "s1")
-    ssh2 = make_ssh(fake_ssh, "s2")
-    for s in (ssh1, ssh2):
-        _add_df(s, "/mnt/nfs", "nfsserver:/export", "nfs4")
-    report = check_shared_fs({"s1": ssh1, "s2": ssh2}, ["/mnt/nfs"])
-    assert report.ok
-    assert "共享文件系统" in report.message
-
-
-def test_shared_fs_multi_server_local_fails(fake_ssh):
-    ssh1 = make_ssh(fake_ssh, "s1")
-    ssh2 = make_ssh(fake_ssh, "s2")
-    for s in (ssh1, ssh2):
-        _add_df(s, "/mnt/cache", "/dev/sda1", "ext4")
-    report = check_shared_fs({"s1": ssh1, "s2": ssh2}, ["/mnt/cache"])
-    assert not report.ok
-    assert "共享文件系统" in report.message
-
-
 def test_shared_fs_dir_missing(fake_ssh):
-    ssh1 = make_ssh(fake_ssh, "s1")
-    _add_df(ssh1, "/nope", "", "", ok=False)
-    report = check_shared_fs({"s1": ssh1}, ["/nope"])
+    _, ssh = make_cm(fake_ssh)
+    _add_df(ssh, "/nope", "", "", ok=False)
+    report = check_shared_fs(ssh, ["/nope"])
     assert not report.ok
 
 
-def test_shared_fs_cross_server_mismatch(fake_ssh):
-    ssh1 = make_ssh(fake_ssh, "s1")
-    ssh2 = make_ssh(fake_ssh, "s2")
-    _add_df(ssh1, "/mnt/x", "serverA:/e1", "nfs4")
-    _add_df(ssh2, "/mnt/x", "serverB:/e2", "nfs4")
-    report = check_shared_fs({"s1": ssh1, "s2": ssh2}, ["/mnt/x"])
-    assert not report.ok
-    assert "不是同一存储源" in report.message
+def test_evaluate_empty():
+    assert not evaluate_shared_fs([]).ok

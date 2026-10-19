@@ -1,14 +1,21 @@
 # -*- coding: utf-8 -*-
-"""GUI 通用组件：多服务器并行任务面板、后台单任务、远端目录选择、日志查看。"""
+"""GUI 通用组件：任务线程（Python threading + Qt 信号投递）、并行任务面板、
+镜像下拉（关键字筛选）、远端目录浏览。
+
+任务线程用 Python threading.Thread 而非 QThread 承载：paramiko 等纯 Python
+库在 Qt C++ 线程中运行存在清理竞态（线程结束时偶发 access violation），
+Python 线程由解释器统一管理更稳妥；信号经 QObject 容器跨线程安全投递。
+"""
 from __future__ import annotations
 
+import threading
+import weakref
 from typing import Callable, Dict, List, Optional, Tuple
 
-from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QFont, QTextCursor
+from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication,
-    QCheckBox,
     QComboBox,
     QCompleter,
     QDialog,
@@ -32,9 +39,9 @@ from PySide6.QtWidgets import (
 
 from ...core.models import DockerImage, ServerInfo
 from ...core.ssh_client import SSHClient
-from ...utils.log import get_logger
 
-logger = get_logger(__name__)
+# 运行中的任务线程（弱引用；测试收尾时统一 join）
+_task_threads: "weakref.WeakSet[threading.Thread]" = weakref.WeakSet()
 
 
 # ============================================================ 镜像下拉
@@ -42,7 +49,7 @@ def fill_image_combo(combo: QComboBox, images: List[DockerImage],
                      current: str = "") -> None:
     """填充镜像下拉框：只可选择（不可手输），显示镜像大小，userData 存 ref。
 
-    - UCM 镜像优先排序；悬浮提示显示创建时间
+    - 疑似 UCM 镜像优先排序；悬浮提示显示创建时间
     - 优先恢复 current（上次选择/已记录值），否则选第一项
     - 无镜像时显示占位提示（data 为空串，视作未选择）
     """
@@ -79,15 +86,15 @@ def combo_ref(combo: QComboBox) -> str:
 
 
 def image_from_ref(ref: str) -> DockerImage:
-    """由 ref 构造占位 DockerImage（用于预填/新加载的镜像，无大小信息）。"""
+    """由 ref 构造占位 DockerImage（用于预填/新构建的镜像，无大小信息）。"""
     return DockerImage(repository=ref, tag="", image_id=ref)
 
 
 def setup_image_combo(combo: QComboBox, max_visible: int = 10) -> None:
     """配置镜像下拉框：弹层最多显示 max_visible 条（超出滚动），输入关键字即可筛选。
 
-    仍只能选中列表中的镜像（不可自由输入）：
-    NoInsert 禁止新增项；结束编辑（回车/失焦）时文本未匹配任何列表项则回退当前选择。
+    仍只能选中列表中的镜像（不可自由输入）：NoInsert 禁止新增项；
+    结束编辑（回车/失焦）时文本未匹配任何列表项则回退当前选择。
     """
     combo.setEditable(True)
     combo.setInsertPolicy(QComboBox.NoInsert)
@@ -122,6 +129,18 @@ def setup_image_combo(combo: QComboBox, max_visible: int = 10) -> None:
 
 
 # ============================================================ 任务线程
+class TaskSignals(QObject):
+    """任务线程 -> GUI 线程的信号（跨线程 emit 自动队列投递）。"""
+
+    sig_progress = Signal(str, int, str)   # server_id, pct, msg
+    sig_log = Signal(str, str)             # server_id, line
+    sig_done = Signal(str, bool, str)      # server_id, ok, message
+
+
+class QuickSignals(QObject):
+    sig_done = Signal(object, object)      # result, error
+
+
 class TaskContext:
     """任务函数使用的回调上下集（线程安全：通过 Qt 信号投递到 GUI 线程）。"""
 
@@ -129,27 +148,25 @@ class TaskContext:
         self._thread = thread
 
     def progress(self, pct: int, msg: str = "") -> None:
-        self._thread.sig_progress.emit(self._thread.server.id, int(pct), msg)
+        self._thread.signals.sig_progress.emit(self._thread.server.id, int(pct), msg)
 
     def log(self, line: str) -> None:
-        self._thread.sig_log.emit(self._thread.server.id, str(line))
+        self._thread.signals.sig_log.emit(self._thread.server.id, str(line))
 
     def cancelled(self) -> bool:
         return self._thread.cancel_requested
 
 
-class ServerTaskThread(QThread):
-    sig_progress = Signal(str, int, str)   # server_id, pct, msg
-    sig_log = Signal(str, str)             # server_id, line
-    sig_done = Signal(str, bool, str)      # server_id, ok, message
+class ServerTaskThread(threading.Thread):
+    """绑定一台服务器的后台任务线程。"""
 
-    def __init__(self, server: ServerInfo, fn: Callable, parent=None):
-        super().__init__(parent)
+    def __init__(self, server: ServerInfo, fn: Callable,
+                 parent: Optional[QObject] = None):
+        super().__init__(daemon=True, name=f"task-{server.name}")
         self.server = server
         self.fn = fn
+        self.signals = TaskSignals(parent)
         self.cancel_requested = False
-        self.ok = False
-        self.message = ""
 
     def request_cancel(self) -> None:
         self.cancel_requested = True
@@ -159,34 +176,29 @@ class ServerTaskThread(QThread):
         try:
             with SSHClient(self.server) as ssh:
                 self.fn(ssh, ctx)
-            self.ok = True
-            self.message = "完成"
+            self.signals.sig_done.emit(self.server.id, True, "完成")
         except Exception as exc:
-            logger.exception("服务器任务失败: %s", self.server.name)
-            self.ok = False
-            self.message = str(exc)
-        self.sig_done.emit(self.server.id, self.ok, self.message)
+            self.signals.sig_done.emit(self.server.id, False, str(exc))
 
 
-class QuickTask(QThread):
+class QuickTask(threading.Thread):
     """单次后台操作（不显示面板）。done(result, error)"""
-    sig_done = Signal(object, object)
 
-    def __init__(self, fn: Callable, parent=None):
-        super().__init__(parent)
+    def __init__(self, fn: Callable, parent: Optional[QObject] = None):
+        super().__init__(daemon=True, name="quick-task")
         self.fn = fn
+        self.signals = QuickSignals(parent)
 
     def run(self) -> None:  # pragma: no cover
         try:
-            self.sig_done.emit(self.fn(), None)
+            self.signals.sig_done.emit(self.fn(), None)
         except Exception as exc:
-            logger.exception("后台任务失败")
-            self.sig_done.emit(None, exc)
+            self.signals.sig_done.emit(None, exc)
 
 
 # ============================================================ 并行任务面板
 class ParallelTaskPanel(QWidget):
-    """多服务器并行执行：每服务器一行进度条 + 一页日志。
+    """任务执行面板：一行进度条 + 一页日志，支持取消。
 
     用法（推荐）：
         panel.run_tasks(tasks, "标题", on_finished=lambda all_ok: ...)
@@ -194,10 +206,6 @@ class ParallelTaskPanel(QWidget):
     """
 
     finished_all = Signal(bool)
-
-    # 已脱离父对象的滞后线程：防止被部件树销毁导致
-    # "QThread destroyed while running" / C 层 abort
-    _ORPHANS: List[ServerTaskThread] = []
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -239,16 +247,10 @@ class ParallelTaskPanel(QWidget):
 
     def start(self, tasks: List[Tuple[ServerInfo, Callable]],
               title: str = "执行任务") -> bool:
-        """启动并行任务；忙碌时提示并返回 False。"""
+        """启动任务；忙碌时提示并返回 False。"""
         if self.is_running():
             QMessageBox.warning(self, "忙碌", "有任务正在执行，请等待完成或取消")
             return False
-        # 清理上一轮已结束的线程（此时均已结束，可安全释放）
-        for t in self._threads:
-            try:
-                t.deleteLater()
-            except RuntimeError:
-                pass
         self._threads = []
         self._results = {}
         self._total = len(tasks)
@@ -283,10 +285,11 @@ class ParallelTaskPanel(QWidget):
             self.tabs.addTab(edit, server.name)
 
             thread = ServerTaskThread(server, fn, self)
-            thread.sig_progress.connect(self._on_progress)
-            thread.sig_log.connect(self._on_log)
-            thread.sig_done.connect(self._on_done)
+            thread.signals.sig_progress.connect(self._on_progress)
+            thread.signals.sig_log.connect(self._on_log)
+            thread.signals.sig_done.connect(self._on_done)
             self._threads.append(thread)
+            _task_threads.add(thread)
 
         self.cancel_btn.setEnabled(bool(tasks))
         for t in self._threads:
@@ -315,22 +318,12 @@ class ParallelTaskPanel(QWidget):
             self.finished_all.connect(handler)
         return self.start(tasks, title)
 
-    def shutdown(self, timeout_ms: int = 3000) -> None:
-        """请求取消并等待线程结束（关闭窗口/测试清理时使用）。
-
-        超时线程【不】terminate：TerminateThread 会破坏 paramiko/C 运行时
-        状态，曾引发进程级 "Fatal Python error: Aborted"。改为脱离父对象
-        挂入类级 _ORPHANS（防随部件树销毁），待其自然结束后自行清理。
-        """
+    def shutdown(self, timeout_s: float = 5.0) -> None:
+        """请求取消并等待线程结束（关闭窗口时使用，避免遗留线程）。"""
         for t in self._threads:
             t.request_cancel()
         for t in self._threads:
-            if not t.wait(timeout_ms):
-                logger.warning("任务线程 %s 未在 %sms 内结束，脱离托管等待自然结束",
-                               t.server.name, timeout_ms)
-                t.setParent(None)
-                t.finished.connect(t.deleteLater)
-                ParallelTaskPanel._ORPHANS.append(t)
+            t.join(timeout=timeout_s)
 
     # ------------------------------------------------------------ 内部
     def _cancel(self) -> None:
@@ -368,7 +361,6 @@ class ParallelTaskPanel(QWidget):
         bar = self._bars.get(server_id)
         if bar is not None:
             if ok:
-                # 任务正常结束但未上报 100% 时自动补满，避免进度条停滞
                 if bar.value() < 100:
                     bar.setValue(100)
                     bar.setFormat("100%  完成")
@@ -389,17 +381,14 @@ class ParallelTaskPanel(QWidget):
 
 # ============================================================ 远端目录选择
 class RemoteDirDialog(QDialog):
-    """浏览远端服务器目录。
+    """浏览远端服务器目录。lister(path) -> [子目录列表]。"""
 
-    listers: {服务器显示名: lister(path)->[子目录列表]}，多台服务器时提供切换下拉。
-    """
-
-    def __init__(self, parent, listers: Dict[str, Callable[[str], List[str]]],
+    def __init__(self, parent, lister: Callable[[str], List[str]],
                  start: str = "/", title: str = "选择服务器目录"):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.resize(540, 440)
-        self._listers = listers
+        self._lister = lister
         self._selected: Optional[str] = None
 
         self.path_edit = QLineEdit(start)
@@ -407,12 +396,6 @@ class RemoteDirDialog(QDialog):
         refresh_btn = QPushButton("刷新")
         up_btn.clicked.connect(self._up)
         refresh_btn.clicked.connect(self._load)
-
-        self.server_combo: Optional[QComboBox] = None
-        if len(listers) > 1:
-            self.server_combo = QComboBox()
-            self.server_combo.addItems(list(listers.keys()))
-            self.server_combo.currentTextChanged.connect(lambda _: self._load())
 
         self.listw = QListWidget()
         self.listw.itemDoubleClicked.connect(self._enter)
@@ -423,9 +406,6 @@ class RemoteDirDialog(QDialog):
 
         layout = QVBoxLayout(self)
         top = QHBoxLayout()
-        if self.server_combo is not None:
-            top.addWidget(QLabel("服务器"))
-            top.addWidget(self.server_combo)
         top.addWidget(self.path_edit, 1)
         top.addWidget(up_btn)
         top.addWidget(refresh_btn)
@@ -435,17 +415,12 @@ class RemoteDirDialog(QDialog):
         layout.addWidget(self.buttons)
         self._load()
 
-    def _current_lister(self) -> Callable[[str], List[str]]:
-        if self.server_combo is not None:
-            return self._listers[self.server_combo.currentText()]
-        return next(iter(self._listers.values()))
-
     def _load(self) -> None:
         path = self.path_edit.text().strip() or "/"
         self.listw.clear()
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            dirs = self._current_lister()(path)
+            dirs = self._lister(path)
         except Exception as exc:
             QApplication.restoreOverrideCursor()
             QMessageBox.warning(self, "读取失败", f"无法列出 {path}:\n{exc}")
@@ -475,60 +450,3 @@ class RemoteDirDialog(QDialog):
 
     def selected_path(self) -> Optional[str]:
         return self._selected
-
-
-# ============================================================ 日志查看
-class LogViewDialog(QDialog):
-    """查看容器内日志（tail）。loader(n)->str"""
-
-    def __init__(self, parent, loader: Callable[[int], str], title: str,
-                 lines: int = 300):
-        super().__init__(parent)
-        self.setWindowTitle(title)
-        self.resize(780, 540)
-        self._loader = loader
-        self._lines = lines
-
-        self.edit = QPlainTextEdit()
-        self.edit.setReadOnly(True)
-        self.edit.setProperty("role", "code")
-        font = QFont("Consolas")
-        font.setStyleHint(QFont.Monospace)
-        self.edit.setFont(font)
-
-        refresh_btn = QPushButton("刷新")
-        refresh_btn.clicked.connect(self.refresh)
-        auto = QCheckBox("自动刷新(5s)")
-        auto.toggled.connect(self._toggle_auto)
-
-        from PySide6.QtCore import QTimer
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self.refresh)
-
-        top = QHBoxLayout()
-        top.addWidget(refresh_btn)
-        top.addWidget(auto)
-        top.addStretch(1)
-        layout = QVBoxLayout(self)
-        layout.addLayout(top)
-        layout.addWidget(self.edit, 1)
-        self.refresh()
-
-    def refresh(self) -> None:
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            text = self._loader(self._lines)
-        except Exception as exc:
-            text = f"[读取失败] {exc}"
-        finally:
-            QApplication.restoreOverrideCursor()
-        self.edit.setPlainText(text)
-        cursor = self.edit.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        self.edit.setTextCursor(cursor)
-
-    def _toggle_auto(self, on: bool) -> None:
-        if on:
-            self._timer.start(5000)
-        else:
-            self._timer.stop()

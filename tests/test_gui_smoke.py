@@ -1,59 +1,440 @@
-﻿# -*- coding: utf-8 -*-
-"""GUI 测试入口：以独立子进程运行 tests/test_gui_all.py 全集。
+# -*- coding: utf-8 -*-
+"""GUI 冒烟测试（offscreen 模式，无显示器环境可跑）。
 
-为什么进程隔离：
-  实验证实——同一进程内加载 PySide6 之后，paramiko 在多线程并发下的
-  原生调用会间歇性访问违例/堆损坏并使整个 pytest 进程崩溃或挂起
-  （Anaconda Python 环境）。因此：
-  - 父进程（pytest tests）：只运行核心/端到端测试，绝不 import PySide6
-    （test_gui_all.py 在父进程中整模块跳过）
-  - 子进程（本文件的 test_gui_suite）：加载 Qt 并运行全部 GUI 测试
-    （GUI 测试内的 SSH 已替换为无网络的 LocalScriptSSH 替身）
+覆盖：三步导航守卫、服务器单选、镜像下拉筛选、安装包下载链接、
+whl 选择即时反馈、docker run 命令生成（NPU/GPU 模板）、界面无黑块。
 """
 import os
-import subprocess
-import sys
-from pathlib import Path
 
 import pytest
 
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-def test_gui_suite():
-    """子进程运行 GUI 测试全集（Qt 与 paramiko 原生并发需进程隔离）。
-
-    子进程若发生原生层崩溃（退出码非 0/1，如 0xC0000005 访问违例），
-    为已知间歇问题（见模块 docstring），自动重试至多 3 次；
-    退出码 1 表示真实测试失败，立即报错不重试。
-    """
-    root = Path(__file__).resolve().parents[1]
-    target = root / "tests" / "test_gui_all.py"
-    env = os.environ.copy()
-    env["UCM_GUI_TEST_CHILD"] = "1"
-    env.setdefault("QT_QPA_PLATFORM", "offscreen")
-    env["PYTHONIOENCODING"] = "utf-8"
-
-    last_tail = ""
-    for attempt in range(1, 4):
-        try:
-            proc = subprocess.run(
-                [sys.executable, "-m", "pytest", str(target), "-q", "--tb=short"],
-                cwd=str(root), env=env, timeout=180,
-                capture_output=True, text=True, encoding="utf-8", errors="replace")
-        except subprocess.TimeoutExpired:
-            # 挂起同样是已知间歇问题（原生层死锁），按崩溃处理重试
-            last_tail = f"[第 {attempt} 次挂起, 超过 180s]"
-            continue
-        if proc.returncode == 0:
-            return
-        out = (proc.stdout or "") + (proc.stderr or "")
-        tail = "\n".join(out.splitlines()[-12:])
-        if proc.returncode == 1:
-            pytest.fail(f"GUI 子进程测试失败(退出码 {proc.returncode}):\n{tail}")
-        last_tail = (f"[第 {attempt} 次崩溃, 退出码 {proc.returncode}]\n{tail}")
-    pytest.fail(
-        "GUI 子进程连续 3 次原生崩溃（Qt+paramiko 并发已知间歇问题, "
-        "见本文件 docstring）:\n" + last_tail)
+pytest.importorskip("PySide6")
 
 
-if __name__ == "__main__":
-    sys.exit(pytest.main([__file__, "-v"]))
+def _automate_message_boxes() -> None:
+    """offscreen 下模态对话框会永久阻塞，自动应答。"""
+    from PySide6.QtWidgets import QMessageBox
+
+    for name in ("information", "warning", "critical", "about"):
+        setattr(QMessageBox, name,
+                staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok))
+    QMessageBox.question = staticmethod(
+        lambda *a, **k: QMessageBox.StandardButton.Yes)
+    QMessageBox.exec = lambda self, *a, **k: QMessageBox.StandardButton.Ok  # noqa: A001
+
+
+_automate_message_boxes()
+
+# 不可达地址使用 127.0.0.1:1（连接立即被拒），避免测试遗留连接超时线程
+UNREACHABLE_HOST, UNREACHABLE_PORT = "127.0.0.1", 1
+
+
+@pytest.fixture(scope="module")
+def qapp():
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    yield app
+
+
+@pytest.fixture(autouse=True)
+def _shutdown_tasks_after_test(qapp):
+    """每个测试结束后等待/关闭所有后台任务线程，防止运行中线程被回收。"""
+    yield
+    from PySide6.QtWidgets import QApplication
+
+    from ucm_deployer.gui.widgets.common import ParallelTaskPanel, _task_threads
+    for w in QApplication.topLevelWidgets():
+        for panel in w.findChildren(ParallelTaskPanel):
+            panel.shutdown()
+    for t in list(_task_threads):
+        t.join(15.0)
+    qapp.processEvents()
+
+
+def _wait_panel(panel, qapp, timeout=60):
+    import time
+
+    deadline = time.time() + timeout
+    while panel.is_running() and time.time() < deadline:
+        qapp.processEvents()
+        time.sleep(0.05)
+    qapp.processEvents()
+    return not panel.is_running()
+
+
+# ============================================================ 主窗口
+def test_main_window_pages(qapp):
+    from ucm_deployer.gui.main_window import MainWindow
+
+    win = MainWindow()
+    win.show()
+    qapp.processEvents()
+    for i in range(3):
+        win.goto_step(i)
+        qapp.processEvents()
+    # 步骤1 无服务器时所有切换被拒绝，页面停留在第0页
+    assert win.pages.currentIndex() == 0
+    win.close()
+
+
+def test_nav_is_flat_buttons(qapp):
+    from ucm_deployer.gui.main_window import MainWindow
+
+    win = MainWindow()
+    qapp.processEvents()
+    assert len(win._nav_buttons) == 3
+    assert win.nav_group.exclusive()
+    for i, btn in enumerate(win._nav_buttons):
+        assert btn.objectName() == "navBtn"
+        assert btn.text().startswith(f"步骤{i + 1}：")
+        assert btn.isCheckable()
+    assert win._nav_buttons[0].isChecked()
+    win.goto_step(0)
+    assert win._nav_buttons[0].isChecked()
+    win.close()
+
+
+def test_nav_rejected_restores_previous_step(qapp, tmp_path):
+    """前置条件不满足时：提示后导航应停留在当前步骤（不跳走）。"""
+    from ucm_deployer.core.models import ServerInfo
+    from ucm_deployer.gui.main_window import MainWindow
+
+    s = ServerInfo.create(name="n", host=UNREACHABLE_HOST, port=UNREACHABLE_PORT)
+    win = MainWindow()
+    win.show()
+    qapp.processEvents()
+
+    # 无服务器 -> 点步骤2被拒，导航回 0
+    win.goto_step(1)
+    qapp.processEvents()
+    assert win.current_step() == 0
+    assert win.pages.currentIndex() == 0
+
+    # 选服务器 -> 步骤2可进；无镜像 -> 步骤3被拒，导航回 1
+    win.ctx.selected = [s]
+    win.goto_step(1)
+    qapp.processEvents()
+    assert win.current_step() == 1
+    win.goto_step(2)
+    qapp.processEvents()
+    assert win.current_step() == 1, "无镜像时步骤3应被拒并停留在步骤2"
+    assert win._nav_buttons[1].isChecked(), "被拒后按钮选中态应回到步骤2"
+
+    # 有镜像 -> 步骤3可进
+    win.ctx.images = {s.id: "img:t"}
+    win.goto_step(2)
+    qapp.processEvents()
+    assert win.current_step() == 2
+    win.close()
+
+
+def test_status_bar_summary(qapp, tmp_path):
+    from ucm_deployer.core.models import ServerInfo
+    from ucm_deployer.core.server_registry import ServerRegistry
+    from ucm_deployer.gui.main_window import MainWindow
+
+    win = MainWindow()
+    win._update_status()
+    assert "未登录" in win.statusBar().currentMessage()
+    s = ServerInfo.create(name="srv1", host="10.0.0.1")
+    win.ctx.selected = [s]
+    win._update_status()
+    assert "srv1" in win.statusBar().currentMessage()
+    assert "未确定" in win.statusBar().currentMessage()
+    win.ctx.images = {s.id: "img:t"}
+    win._update_status()
+    assert "已确定" in win.statusBar().currentMessage()
+    win.close()
+
+
+def test_main_window_no_black_areas(qapp):
+    """回归测试：布局间隙不得出现未绘制黑色（QSS 规则顺序 bug 曾致窗口大片黑色）。"""
+    from ucm_deployer.gui.main_window import MainWindow
+    from ucm_deployer.gui.theme import apply_light_theme
+
+    apply_light_theme(qapp)
+    win = MainWindow()
+    win.resize(1320, 880)
+    win.show()
+    qapp.processEvents()
+    img = win.grab().toImage()
+
+    points = [
+        (6, 6, "窗口左上边距"),
+        (660, 6, "窗口顶边距"),
+        (30, 440, "导航下方留白"),
+        (660, 874, "窗口底边距"),
+        (1314, 440, "窗口右边距"),
+    ]
+    blacks = []
+    for x, y, label in points:
+        c = img.pixelColor(x, y)
+        hexs = f"#{c.red():02x}{c.green():02x}{c.blue():02x}"
+        if c.lightness() < 100:
+            blacks.append(f"{label}({x},{y})={hexs}")
+    assert not blacks, "存在未绘制黑色区域: " + ", ".join(blacks)
+
+    c = img.pixelColor(30, 440)
+    assert c.red() > 230 and c.green() > 230 and c.blue() > 230, \
+        f"留白区非浅色: #{c.red():02x}{c.green():02x}{c.blue():02x}"
+    win.close()
+
+
+# ============================================================ 步骤1：服务器单选
+def test_server_page_single_selection(qapp, tmp_path):
+    from PySide6.QtCore import Qt
+
+    from ucm_deployer.core.server_registry import ServerRegistry
+    from ucm_deployer.gui.state import AppContext
+    from ucm_deployer.gui.widgets.server_page import ServerPage
+
+    ctx = AppContext(ServerRegistry(tmp_path))
+    ctx.registry.upsert(_mk_server(ctx, "node1", "10.0.0.1"))
+    ctx.registry.upsert(_mk_server(ctx, "node2", "10.0.0.2"))
+    page = ServerPage(ctx)
+    page.refresh()
+    qapp.processEvents()
+    assert page.table.rowCount() == 2
+
+    page.table.item(0, 0).setCheckState(Qt.Checked)
+    qapp.processEvents()
+    assert len(ctx.selected) == 1
+    assert ctx.selected[0].name == "node1"
+
+    # 再勾选第二台 -> 单选：第一台自动取消
+    page.table.item(1, 0).setCheckState(Qt.Checked)
+    qapp.processEvents()
+    assert len(ctx.selected) == 1
+    assert ctx.selected[0].name == "node2"
+    assert ctx.server.name == "node2"
+
+
+def _mk_server(ctx, name, host):
+    from ucm_deployer.core.models import ServerInfo
+
+    info = ServerInfo.create(name=name, host=host, password="pw")
+    ctx.registry.upsert(info)
+    return info
+
+
+# ============================================================ 易用性：镜像筛选 + 下载链接
+def test_image_combo_filter(qapp):
+    """镜像下拉筛选：输入关键字提交后选中首个匹配项；未匹配回退当前选择。"""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QComboBox
+
+    from ucm_deployer.core.models import DockerImage
+    from ucm_deployer.gui.widgets.common import (combo_ref, fill_image_combo,
+                                                 setup_image_combo)
+
+    combo = QComboBox()
+    setup_image_combo(combo)
+    fill_image_combo(combo, [
+        DockerImage("quay.io/ascend/vllm-ascend", "v0.23.0-a3", "id1", "18.2GB"),
+        DockerImage("ucm-vllm", "v0.1", "id2", "5GB"),
+        DockerImage("nginx", "latest", "id3", "100MB"),
+    ])
+    # 可编辑筛选 + 弹层限高 + 补全器包含匹配（不区分大小写）
+    assert combo.isEditable() and combo.maxVisibleItems() == 10
+    assert combo.insertPolicy() == QComboBox.InsertPolicy.NoInsert
+    assert combo.completer() is not None
+    assert combo.completer().filterMode() == Qt.MatchContains
+
+    # 输入关键字结束编辑 -> 选中首个包含关键字的镜像
+    combo.lineEdit().setText("nginx")
+    combo.lineEdit().editingFinished.emit()
+    assert combo_ref(combo) == "nginx:latest"
+
+    # 输入未匹配文本 -> 回退为当前选择（不可自由输入）
+    combo.lineEdit().setText("no-such-image")
+    combo.lineEdit().editingFinished.emit()
+    assert combo_ref(combo) == "nginx:latest"
+    assert combo.currentText().startswith("nginx:latest")
+
+    # 补全弹层选中项 -> 同步当前选择
+    combo.completer().activated.emit(combo.itemText(0))
+    assert combo_ref(combo) == "ucm-vllm:v0.1"
+
+
+def test_fill_image_combo_ordering_and_placeholder(qapp):
+    from PySide6.QtWidgets import QComboBox
+
+    from ucm_deployer.core.models import DockerImage
+    from ucm_deployer.gui.widgets.common import combo_ref, fill_image_combo
+
+    combo = QComboBox()
+    images = [
+        DockerImage("quay.io/ascend/vllm-ascend", "v0.23.0-a3", "id1", "18.2GB"),
+        DockerImage("ucm-vllm", "v0.1", "id2", "5GB"),
+    ]
+    fill_image_combo(combo, images,
+                     current="quay.io/ascend/vllm-ascend:v0.23.0-a3")
+    assert combo.count() == 2
+    assert combo_ref(combo) == "quay.io/ascend/vllm-ascend:v0.23.0-a3"
+    assert "18.2GB" in combo.currentText(), "应显示镜像大小"
+    assert "ucm-vllm:v0.1" in combo.itemText(0), "疑似 UCM 镜像应排在最前"
+
+    fill_image_combo(combo, [])
+    assert combo_ref(combo) == ""
+    assert "尚未加载" in combo.currentText()
+
+
+def test_image_page_download_hints(qapp, tmp_path):
+    """步骤2 包输入框下方应提供在线下载链接提示（本地无包时指引获取）。"""
+    from ucm_deployer.core.models import ServerInfo
+    from ucm_deployer.core.server_registry import ServerRegistry
+    from ucm_deployer.gui.state import AppContext
+    from ucm_deployer.gui.widgets.image_page import ImagePage
+
+    ctx = AppContext(ServerRegistry(tmp_path))
+    ctx.selected = [ServerInfo.create(name="n1", host=UNREACHABLE_HOST,
+                                      port=UNREACHABLE_PORT)]
+    page = ImagePage(ctx)
+    # UCM whl 下载指引：GitHub Releases 链接可点击
+    assert "unified-cache-management/releases" in page.ucm_dl_hint.text()
+    assert page.ucm_dl_hint.openExternalLinks()
+    assert "github.com" in page.ucm_dl_hint.toolTip()
+    # wrapt 下载指引：PyPI 1.17.2 链接 + 架构匹配提示
+    assert "pypi.org/project/wrapt/1.17.2" in page.wrapt_dl_hint.text()
+    assert page.wrapt_dl_hint.openExternalLinks()
+    assert "aarch64" in page.wrapt_dl_hint.text(), "应提示选择匹配服务器架构的 whl"
+
+
+def test_image_page_whl_instant_feedback(qapp, tmp_path):
+    """whl 选择即时反馈：文件存在性 + 架构标记解析。"""
+    from ucm_deployer.core.models import ServerInfo
+    from ucm_deployer.core.server_registry import ServerRegistry
+    from ucm_deployer.gui.state import AppContext
+    from ucm_deployer.gui.widgets.image_page import ImagePage
+
+    ctx = AppContext(ServerRegistry(tmp_path))
+    ctx.selected = [ServerInfo.create(name="n1", host=UNREACHABLE_HOST,
+                                      port=UNREACHABLE_PORT)]
+    page = ImagePage(ctx)
+
+    wrapt = tmp_path / "wrapt-1.17.2-cp39-cp39-manylinux2014_aarch64.whl"
+    wrapt.write_bytes(b"PK")
+    page.wrapt_whl_edit.setText(str(wrapt))
+    qapp.processEvents()
+    assert "架构标记 aarch64" in page.wrapt_fb.text()
+    assert "✓" in page.wrapt_fb.text()
+
+    ucm = tmp_path / "uc_manager-0.2.1-py3-none-any.whl"
+    ucm.write_bytes(b"PK")
+    page.ucm_whl_edit.setText(str(ucm))
+    qapp.processEvents()
+    assert "纯 Python 包" in page.ucm_fb.text()
+
+    page.ucm_whl_edit.setText(str(tmp_path / "missing.whl"))
+    qapp.processEvents()
+    assert "文件不存在" in page.ucm_fb.text()
+
+
+def test_image_page_platform_label(qapp, tmp_path):
+    from ucm_deployer.core.models import DeviceInfo, DeviceType, ServerInfo
+    from ucm_deployer.core.server_registry import ServerRegistry
+    from ucm_deployer.gui.state import AppContext
+    from ucm_deployer.gui.widgets.image_page import ImagePage
+
+    ctx = AppContext(ServerRegistry(tmp_path))
+    page = ImagePage(ctx)
+    page._update_platform_label()
+    assert "未探测设备" in page.platform_label.text()
+
+    s = ServerInfo.create(name="n", host="10.0.0.1")
+    ctx.selected = [s]
+    ctx.devices = {s.id: DeviceInfo(DeviceType.ASCEND, "Ascend 910B3", 8)}
+    page._update_platform_label()
+    assert "ascend" in page.platform_label.text()
+
+    ctx.devices = {s.id: DeviceInfo(DeviceType.NVIDIA, "NVIDIA A800", 8)}
+    page._update_platform_label()
+    assert "cuda" in page.platform_label.text()
+
+
+# ============================================================ 步骤3：命令生成
+def test_container_page_command_gen(qapp, tmp_path):
+    """命令生成：卡数全量映射、NVIDIA 模板带 --runtime/-p、命令可编辑。"""
+    from ucm_deployer.core.models import (DeviceInfo, DeviceType, DockerImage,
+                                          ServerInfo)
+    from ucm_deployer.core.server_registry import ServerRegistry
+    from ucm_deployer.gui.state import AppContext
+    from ucm_deployer.gui.widgets.common import fill_image_combo
+    from ucm_deployer.gui.widgets.container_page import ContainerPage
+
+    ctx = AppContext(ServerRegistry(tmp_path))
+    s1 = ServerInfo.create(name="n1", host=UNREACHABLE_HOST, port=UNREACHABLE_PORT)
+    ctx.selected = [s1]
+    ctx.devices = {s1.id: DeviceInfo(DeviceType.ASCEND, "Ascend 910B3", 8)}
+    ctx.images = {s1.id: "img:t1"}
+
+    page = ContainerPage(ctx)
+    fill_image_combo(page.image_combo, [DockerImage("img", "t1", "i", "1GB")],
+                     current="img:t1")
+    page._regen()
+    qapp.processEvents()
+
+    cmd = page.command_text()
+    assert cmd.startswith("docker run -itd")
+    assert "--device /dev/davinci7" in cmd          # 8 卡全量映射
+    assert "--device /dev/davinci_manager" in cmd
+    assert "--net=host" in cmd
+
+    # 命令可直接编辑，创建时按编辑框内容执行
+    page.cmd_edit.setPlainText("docker run -itd --name edited img:t1 bash")
+    assert page.command_text().startswith("docker run -itd --name edited")
+
+    # NVIDIA 设备 -> --runtime nvidia + 端口映射
+    ctx.devices = {s1.id: DeviceInfo(DeviceType.NVIDIA, "NVIDIA A800", 8)}
+    fill_image_combo(page.image_combo, [DockerImage("img", "t1", "i", "1GB")],
+                     current="img:t1")
+    page._regen()
+    qapp.processEvents()
+    cmd = page.command_text()
+    assert "--runtime nvidia" in cmd
+    assert "-p 8000:8000" in cmd
+    assert "davinci" not in cmd
+
+
+def test_container_page_kv_and_mounts(qapp, tmp_path):
+    """kvcache 多目录 + 模型挂载 + 自定义挂载进入命令。"""
+    from PySide6.QtCore import Qt
+
+    from ucm_deployer.core.models import DeviceInfo, DeviceType, DockerImage, ServerInfo
+    from ucm_deployer.core.server_registry import ServerRegistry
+    from ucm_deployer.gui.state import AppContext
+    from ucm_deployer.gui.widgets.common import fill_image_combo
+    from ucm_deployer.gui.widgets.container_page import ContainerPage
+
+    ctx = AppContext(ServerRegistry(tmp_path))
+    s1 = ServerInfo.create(name="n1", host=UNREACHABLE_HOST, port=UNREACHABLE_PORT)
+    ctx.selected = [s1]
+    ctx.devices = {s1.id: DeviceInfo(DeviceType.ASCEND, "Ascend 910B3", 8)}
+    ctx.images = {s1.id: "img:t1"}
+
+    page = ContainerPage(ctx)
+    fill_image_combo(page.image_combo, [DockerImage("img", "t1", "i", "1GB")],
+                     current="img:t1")
+
+    page.kv_add_row.edit.setText("/mnt/kvcache1")
+    page._kv_add()
+    page.kv_add_row.edit.setText("/mnt/kvcache2")
+    page._kv_add()
+    assert page.kv_list.count() == 2
+
+    page.model_host.edit.setText("/data/models/Qwen3")
+    page.model_container.setText("/models")
+    page._extra_add()
+    page.extra_table.item(0, 0).setText("/workspace/logs")
+    page.extra_table.item(0, 1).setText("/logs")
+    qapp.processEvents()
+
+    page._regen()
+    cmd = page.command_text()
+    assert "-v /mnt/kvcache1:/mnt/kvcache1" in cmd
+    assert "-v /mnt/kvcache2:/mnt/kvcache2" in cmd
+    assert "-v /data/models/Qwen3:/models:ro" in cmd
+    assert "-v /workspace/logs:/logs" in cmd

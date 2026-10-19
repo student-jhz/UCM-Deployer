@@ -1,95 +1,92 @@
 # -*- coding: utf-8 -*-
 import pytest
-import paramiko
 
 from ucm_deployer.core.models import ServerInfo
 from ucm_deployer.core.ssh_client import SSHClient, SSHError
 
 
-def make_server():
-    return ServerInfo.create(name="s1", host="127.0.0.1", port=22,
-                             username="root", password="pw")
-
-
-def test_auto_connect_and_exec(fake_ssh):
-    ssh = SSHClient(make_server())
-    res = ssh.exec("echo hello")  # 未脚本化 -> 127
-    assert not res.ok
-    assert res.exit_code == 127
-    # 连接参数校验
-    assert ssh._client.connect_kwargs["username"] == "root"
-    assert ssh._client.connect_kwargs["password"] == "pw"
-
-
-def test_exec_scripted(fake_ssh):
-    ssh = SSHClient(make_server())
+def make_ssh(fake_ssh) -> SSHClient:
+    ssh = SSHClient(ServerInfo.create(name="s", host="127.0.0.1"))
     ssh.connect()
-    ssh._client.add(r"^npu-smi info$", stdout="| 0  910B3  | OK |\n")
-    res = ssh.exec("npu-smi info")
-    assert res.ok and "910B3" in res.stdout
+    return ssh
 
 
-def test_exec_separates_stderr(fake_ssh):
-    ssh = SSHClient(make_server())
-    ssh.connect()
-    ssh._client.add(r"^fail$", exit_code=2, stderr="boom\n")
-    res = ssh.exec("fail")
-    assert res.exit_code == 2 and res.stderr == "boom\n" and res.stdout == ""
-
-
-def test_exec_timeout(fake_ssh):
-    ssh = SSHClient(make_server())
-    ssh.connect()
-    ssh._client.add(r"^sleep$", hang=True)
-    with pytest.raises(SSHError):
-        ssh.exec("sleep", timeout=0.3)
-
-
-def test_exec_stream_lines(fake_ssh):
-    ssh = SSHClient(make_server())
-    ssh.connect()
-    ssh._client.add(r"^docker build", stdout="Step 1/3\nStep 2/3\nStep 3/3\n")
-    lines = []
-    res = ssh.exec_stream("docker build -t x .", on_line=lines.append)
+def test_exec_returns_output(fake_ssh):
+    ssh = make_ssh(fake_ssh)
+    ssh._client.add(r"^docker info", stdout="Server Version: 27\n")
+    res = ssh.exec("docker info")
     assert res.ok
-    assert lines == ["Step 1/3", "Step 2/3", "Step 3/3"]
-    assert "Step 3/3" in res.stdout
+    assert "27" in res.stdout
+
+
+def test_exec_nonzero_exit(fake_ssh):
+    ssh = make_ssh(fake_ssh)
+    ssh._client.add(r"^bad", stderr="boom\n", exit_code=3)
+    res = ssh.exec("bad command")
+    assert not res.ok
+    assert res.exit_code == 3
+    assert "boom" in res.output
+
+
+def test_exec_unmatched_command(fake_ssh):
+    ssh = make_ssh(fake_ssh)
+    res = ssh.exec("never-registered")
+    assert res.exit_code == 127
+
+
+def test_exec_combine_stderr(fake_ssh):
+    ssh = make_ssh(fake_ssh)
+    ssh._client.add(r"^cmd", stdout="out\n", stderr="err\n")
+    res = ssh.exec("cmd", combine_stderr=True)
+    assert "out" in res.stdout and "err" in res.stdout
 
 
 def test_connect_failure_raises_ssherror(fake_ssh):
-    fake_ssh.connect_exception = paramiko.AuthenticationException("bad password")
-    ssh = SSHClient(make_server())
-    with pytest.raises(SSHError):
+    fake_ssh.connect_exception = OSError("unreachable")
+    ssh = SSHClient(ServerInfo.create(name="s", host="1.2.3.4", port=1))
+    with pytest.raises(SSHError, match="连接"):
         ssh.connect()
 
 
-def test_upload_file(fake_ssh, tmp_path):
-    local = tmp_path / "ucm-0.2.0-py3-none-any.whl"
-    local.write_bytes(b"fake-wheel")
-    ssh = SSHClient(make_server())
-    progress = []
-    ssh.upload_file(str(local), "/tmp/ucm.whl",
-                    progress_cb=lambda sent, total: progress.append((sent, total)))
-    assert ssh._client.sftp_sessions[-1].puts == [(str(local), "/tmp/ucm.whl")]
-    assert progress and progress[-1][0] == progress[-1][1] == len(b"fake-wheel")
+def test_upload_and_read_file(fake_ssh, tmp_path):
+    ssh = make_ssh(fake_ssh)
+    local = tmp_path / "pkg.whl"
+    local.write_bytes(b"PK wheel bytes")
+
+    ssh.upload_file(str(local), "/tmp/pkg.whl")
+    sftp = ssh._client.sftp_sessions[-1]
+    assert sftp.puts == [(str(local), "/tmp/pkg.whl")]
+    assert ssh._client.files["/tmp/pkg.whl"] == b"PK wheel bytes"
+
+    assert ssh.file_size("/tmp/pkg.whl") == len(b"PK wheel bytes")
 
 
-def test_write_and_read_remote_file(fake_ssh):
-    ssh = SSHClient(make_server())
-    ssh.write_file("/tmp/x.txt", "hello\n中文")
-    assert ssh.read_file("/tmp/x.txt") == "hello\n中文"
+def test_write_and_read_text_file(fake_ssh):
+    ssh = make_ssh(fake_ssh)
+    ssh.write_file("/tmp/x.txt", "你好 UCM\n")
+    assert ssh._client.files["/tmp/x.txt"] == "你好 UCM\n".encode("utf-8")
+    assert ssh.read_file("/tmp/x.txt") == "你好 UCM\n"
+
+
+def test_download_file(fake_ssh, tmp_path):
+    ssh = make_ssh(fake_ssh)
+    ssh._client.files["/remote/data.bin"] = b"\x00\x01\x02"
+    local = tmp_path / "out.bin"
+    ssh.download_file("/remote/data.bin", str(local))
+    assert local.read_bytes() == b"\x00\x01\x02"
 
 
 def test_mkdirs(fake_ssh):
-    ssh = SSHClient(make_server())
-    ssh.connect()
-    ssh._client.add(r"^mkdir -p .* && test -d ", stdout="")
-    ssh.mkdirs("/tmp/a/b")
-    assert ssh._client.channels[-1].executed_command == "mkdir -p /tmp/a/b && test -d /tmp/a/b"
+    ssh = make_ssh(fake_ssh)
+    ssh._client.add(r"^mkdir -p ")
+    ssh.mkdirs("/tmp/build-dir")
+    assert "mkdir -p /tmp/build-dir" in ssh._client.channels[-1].executed_command
 
 
-def test_context_manager(fake_ssh):
-    ssh = SSHClient(make_server())
-    with ssh:
+def test_context_manager_closes(fake_ssh):
+    with make_ssh(fake_ssh) as ssh:
         assert ssh.is_connected
+        client = ssh._client
+    assert client.closed
     assert not ssh.is_connected
+    assert ssh._client is None

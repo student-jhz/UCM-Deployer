@@ -1,32 +1,40 @@
 # -*- coding: utf-8 -*-
-import pytest
-
-from ucm_deployer.core.crypto import Crypto, CryptoError
-
-
-def test_roundtrip(tmp_path):
-    c = Crypto(tmp_path / "k")
-    token = c.encrypt("s3cret-密码")
-    assert token != "s3cret-密码"
-    assert c.decrypt(token) == "s3cret-密码"
+import ucm_deployer.core.crypto as crypto
+from ucm_deployer.core.crypto import decrypt, encrypt
 
 
-def test_same_key_file_decrypts(tmp_path):
-    c1 = Crypto(tmp_path / "k")
-    token = c1.encrypt("hello")
-    c2 = Crypto(tmp_path / "k")
-    assert c2.decrypt(token) == "hello"
+def test_encrypt_decrypt_roundtrip(tmp_path, monkeypatch):
+    from ucm_deployer.utils import paths
+    monkeypatch.setattr(paths, "default_config_dir", lambda: tmp_path)
+    monkeypatch.setattr(crypto, "_key_path", lambda: tmp_path / ".secret.key")
+
+    token = encrypt("密码123")
+    assert token != "密码123"
+    assert decrypt(token) == "密码123"
 
 
-def test_different_key_fails(tmp_path):
-    c1 = Crypto(tmp_path / "k1")
-    token = c1.encrypt("hello")
-    c2 = Crypto(tmp_path / "k2")
-    with pytest.raises(CryptoError):
-        c2.decrypt(token)
+def test_key_reused(tmp_path, monkeypatch):
+    from ucm_deployer.utils import paths
+    monkeypatch.setattr(paths, "default_config_dir", lambda: tmp_path)
+    monkeypatch.setattr(crypto, "_key_path", lambda: tmp_path / ".secret.key")
+
+    t1 = encrypt("a")
+    t2 = encrypt("a")
+    assert decrypt(t1) == decrypt(t2) == "a"
+    # 密钥文件已生成且不再变化
+    assert (tmp_path / ".secret.key").is_file()
 
 
-def test_corrupt_token(tmp_path):
-    c = Crypto(tmp_path / "k")
-    with pytest.raises(CryptoError):
-        c.decrypt("not-a-valid-token")
+def test_empty_plaintext(tmp_path, monkeypatch):
+    from ucm_deployer.utils import paths
+    monkeypatch.setattr(paths, "default_config_dir", lambda: tmp_path)
+    monkeypatch.setattr(crypto, "_key_path", lambda: tmp_path / ".secret.key")
+    assert encrypt("") == ""
+    assert decrypt("") == ""
+
+
+def test_decrypt_invalid_token_returns_empty(tmp_path, monkeypatch):
+    from ucm_deployer.utils import paths
+    monkeypatch.setattr(paths, "default_config_dir", lambda: tmp_path)
+    monkeypatch.setattr(crypto, "_key_path", lambda: tmp_path / ".secret.key")
+    assert decrypt("not-a-valid-token") == ""

@@ -2,19 +2,17 @@
 
 **UCM (Unified Cache Management) 一键部署工具 —— Windows 桌面版**
 
-面向 vLLM / vLLM-Ascend / SGLang 推理集群（Ascend NPU / NVIDIA GPU），把 UCM 的部署从手工操作变成五个向导步骤：
+面向 vLLM / vLLM-Ascend / SGLang 推理容器（Ascend NPU / NVIDIA GPU），把 UCM 的部署简化为三个向导步骤：
 
 ```
-① 服务器管理 → ② 镜像构建 → ③ 容器创建 → ④ 部署配置 → ⑤ 拉起服务
+① 服务器管理 → ② 镜像构建 → ③ 容器创建
 ```
 
-- **步骤1 服务器管理**：SSH 登录信息本地加密保存/复用；选择本次部署的服务器；`npu-smi`/`nvidia-smi` 设备探测与多机型号一致性校验
-- **步骤2 镜像构建与分发**：选一台构建服务器，基础镜像从其 `docker images` 选择（或上传 tar 包 `docker load`）；上传本地 UCM whl（离线模式含 wrapt whl、可选 ucm-toolkit 源码安装）自动生成 Dockerfile 并 `docker build` 成带 UCM 的引擎镜像，**构建一次后自动分发到其他服务器**（docker save → 中转 → 各服务器 docker load，每台独立日志与汇总）；已有 UCM 镜像可校验后跳过构建
-- **步骤3 容器创建**：自动识别卡数生成全量 `docker run`（Ascend 全部 davinci 设备 + 驱动挂载 / NVIDIA `--gpus all`）；kvcache 挂载目录共享文件系统校验；模型只读映射；命令可编辑后执行
-- **步骤4 部署配置**：PD 混部 / PD 分离拓扑（每节点 DP×TP 卡数校验）；卡资源占用检查；自动生成含 UCM `--kv-transfer-config` 的 vllm/sglang 启动脚本（mooncake master/mooncake.json/ray 集群/负载均衡/UCM 配置模板），**全部可编辑**
-- **步骤5 拉起服务**：脚本 `docker cp` 落位、按依赖顺序拉起、`curl /health` 健康检查、容器日志跟踪、一键停止
+- **步骤1 服务器管理**：SSH 登录信息本地加密保存/复用；单选登录一台服务器；`npu-smi`/`nvidia-smi` 设备探测（型号/卡数/CPU 架构）
+- **步骤2 镜像构建**：选服务器已有镜像（**关键字筛选**）或上传 tar 包 `docker load`；上传 wrapt whl、UCM whl、（可选）ucm-toolkit 源码包（输入框附**在线下载链接**）；构建前自动**校验服务器/镜像/安装包匹配**（设备平台 + whl 架构标记）；生成 Dockerfile 构建带 UCM 的镜像
+- **步骤3 容器创建**：选 UCM 镜像（**选择时自动校验**镜像内 UCM）；自动识别卡数**全量映射加速卡**（NPU: 全部 davinci 设备 + 驱动挂载 + `--net=host`；GPU: `--runtime nvidia --gpus all -p 8000:8000`）；KV Cache / 模型只读 / 自定义挂载；docker run 命令**可编辑**后执行
 
-所有生成的命令与脚本都是**先展示、可编辑、再执行**。
+所有生成的命令都是**先展示、可编辑、再执行**。
 
 ## 快速开始
 
@@ -23,7 +21,7 @@
 双击 `UCM-Deployer.exe` 即可（无需 Python）。自检：
 
 ```powershell
-.\UCM-Deployer.exe --selftest --out report.txt
+.\UCM-Deployer.exe --smoke
 ```
 
 ### 源码运行 / 开发
@@ -45,54 +43,51 @@ powershell -ExecutionPolicy Bypass -File scripts\build_exe.ps1
 
 ### 云端自动构建发布（推荐）
 
-推送 `v*` 标签即触发 GitHub Actions：云端跑全量测试 → PyInstaller 打包 → 产物自检（`--selftest`/`--smoke`）→ 自动挂到对应 Release（`.github/workflows/release.yml`）：
+推送 `v*` 标签即触发 GitHub Actions：云端跑全量测试 → PyInstaller 打包 → 产物自检（`--smoke`）→ 自动挂到对应 Release（`.github/workflows/release.yml`）：
 
 ```powershell
 git tag v0.2.0 && git push origin v0.2.0
 ```
 
-也支持在 Actions 页面手动运行（workflow_dispatch，指定标签）。本地 `scripts\create_release.ps1` 为无 Actions 时的离线备选。
+也支持在 Actions 页面手动运行（workflow_dispatch，指定标签）。
 
-## 无真实服务器？用内置模拟服务器
-
-```powershell
-.venv\Scripts\python -m ucm_deployer.mock.mock_server --port 2222 --device ascend --cards 8
-```
-
-然后在 GUI 中添加服务器 `127.0.0.1:2222`（root/root），即可体验/验证**完整五步流程**（模拟 npu-smi、docker load/build/run/exec/cp、健康检查等）。
-
-## 自验证体系（无真实环境）
+## 自验证体系（无真实服务器）
 
 | 层级 | 手段 | 覆盖 |
 |---|---|---|
-| 单元测试 | `tests/`（FakeSSH 脚本化 paramiko 替身） | SSH/加密/注册表/设备解析/docker 解析/Dockerfile/命令生成/拓扑校验 等 127 项 |
-| 端到端 | 真实 paramiko 客户端 ↔ 本地模拟 SSH 服务器 | 15 步全流程 + 双服务器 PD 分离 |
-| GUI | offscreen 冒烟 + GUI×模拟服务器集成测试 | 五页面实例化、多线程任务面板、真实构建/创建/生成 |
-| 产物 | `exe --selftest` / `exe --smoke` | 打包后程序自检 |
-
-生成的 bash 脚本在可用环境下执行 `bash -n` 语法检查；不可用时退化为引号配平 + 续行 + 内嵌 kv JSON 解析的静态检查。
+| 单元测试 | `tests/`（FakeSSH 脚本化 paramiko 替身） | SSH/加密/注册表/设备解析/docker 解析/Dockerfile/命令生成/匹配校验 等 85 项 |
+| GUI | offscreen 冒烟 | 三页面实例化、导航守卫、单选、镜像筛选、下载链接、whl 反馈、像素采样断言界面无黑块 |
+| 产物 | `exe --smoke` | 打包后程序自检 |
 
 ## 文档
 
-- [用户手册](docs/用户手册.md) —— 安装、五步操作详解、CLI、FAQ
-- [架构设计](docs/architecture.md) —— 模块划分、关键决策、阶段实现记录
-- [需求原文](design.md)
+- [用户手册](docs/用户手册.md) —— 安装、三步操作详解、FAQ
+- [架构设计](docs/architecture.md) —— 模块划分、关键决策
 
 ## 目录结构
 
 ```
 UCM-Deployer/
-├── main.py / cli.py            # GUI / CLI 入口
+├── main.py                       # GUI 入口（--smoke 无头自检）
 ├── ucm_deployer/
-│   ├── core/                   # 核心逻辑（无 GUI 依赖）
-│   ├── service/                # 部署编排（脚本落位/拉起/健康检查）
-│   ├── gui/                    # PySide6 五步向导
-│   ├── mock/                   # 模拟 SSH 服务器 + 自检
-│   └── utils/                  # 日志/路径
-├── tests/                      # 127 项测试
-├── docs/                       # 用户手册 / 架构文档
-├── scripts/build_exe.ps1       # 打包脚本
-└── ucm_deployer.spec           # PyInstaller 配置
+│   ├── core/                     # 核心逻辑（无 GUI 依赖）
+│   │   ├── models.py             # 数据模型
+│   │   ├── crypto.py             # 凭据加密
+│   │   ├── ssh_client.py         # SSH/SFTP 封装
+│   │   ├── server_registry.py    # 服务器注册表
+│   │   ├── device_detector.py    # 设备/架构探测
+│   │   ├── docker_manager.py     # docker 操作
+│   │   ├── image_builder.py      # 匹配校验 + 镜像构建
+│   │   └── container_manager.py  # docker run 生成/执行
+│   ├── gui/                      # PySide6 三步向导
+│   │   ├── widgets/              # 三个步骤页面 + 通用组件
+│   │   ├── main_window.py        # 主窗口/导航守卫/状态栏
+│   │   └── theme.py              # QSS 主题 + 图标
+│   └── utils/                    # 日志/路径
+├── tests/                        # 85 项测试（FakeSSH + GUI 冒烟）
+├── docs/                         # 用户手册 / 架构文档
+├── scripts/build_exe.ps1         # 打包脚本
+└── ucm_deployer.spec             # PyInstaller 配置
 ```
 
 ## 依赖

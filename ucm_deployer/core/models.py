@@ -1,13 +1,9 @@
 # -*- coding: utf-8 -*-
-"""核心数据模型。
-
-所有模块共享的纯数据结构（dataclass），不依赖 SSH/GUI 等任何上层模块，
-便于序列化持久化与单元测试。
-"""
+"""核心数据模型（纯 dataclass，不依赖 SSH/GUI，便于序列化与单元测试）。"""
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -26,13 +22,16 @@ class DeviceInfo:
     device_type: DeviceType = DeviceType.UNKNOWN
     model: str = ""          # 如 'Ascend 910B3' / 'NVIDIA A800-SXM4-80GB'
     count: int = 0           # 卡数
+    arch: str = ""           # CPU 架构（uname -m），如 'aarch64' / 'x86_64'
     detail: str = ""         # 原始探测输出（调试用）
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "device_type": self.device_type.value if isinstance(self.device_type, DeviceType) else str(self.device_type),
+            "device_type": self.device_type.value
+            if isinstance(self.device_type, DeviceType) else str(self.device_type),
             "model": self.model,
             "count": int(self.count or 0),
+            "arch": self.arch,
             "detail": self.detail,
         }
 
@@ -48,6 +47,7 @@ class DeviceInfo:
             device_type=dtype,
             model=str(data.get("model", "") or ""),
             count=int(data.get("count", 0) or 0),
+            arch=str(data.get("arch", "") or ""),
             detail=str(data.get("detail", "") or ""),
         )
 
@@ -166,7 +166,6 @@ class CommandResult:
 
     @property
     def output(self) -> str:
-        """stdout + stderr 合并（用于日志展示）。"""
         parts = []
         if self.stdout:
             parts.append(self.stdout.rstrip("\n"))
@@ -190,26 +189,13 @@ class DockerImage:
         return self.image_id
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"repository": self.repository, "tag": self.tag, "image_id": self.image_id,
-                "size": self.size, "created": self.created}
-
-
-@dataclass
-class DockerContainer:
-    container_id: str
-    names: str
-    image: str
-    status: str = ""
-    state: str = ""
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {"container_id": self.container_id, "names": self.names, "image": self.image,
-                "status": self.status, "state": self.state}
+        return {"repository": self.repository, "tag": self.tag,
+                "image_id": self.image_id, "size": self.size, "created": self.created}
 
 
 @dataclass
 class UCMInfo:
-    """UCM 包安装状态（pip show ucm 的解析结果）。"""
+    """UCM 包安装状态（pip show 解析结果）。"""
 
     installed: bool = False
     version: str = ""
@@ -245,6 +231,6 @@ class VolumeMount:
     readonly: bool = False
 
     def to_docker_arg(self) -> str:
-        from ..core.shell import shq
+        from .shell import shq
 
         return f"-v {shq(self.host_path)}:{shq(self.container_path)}" + (":ro" if self.readonly else "")

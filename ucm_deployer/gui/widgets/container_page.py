@@ -1,14 +1,17 @@
 # -*- coding: utf-8 -*-
-"""步骤3：容器创建 —— UCM 镜像校验、kvcache 挂载、docker run 命令生成/编辑/执行。"""
+"""步骤3：容器创建 —— 选择 UCM 镜像（选择时自动校验）、docker run 生成/编辑/执行。
+
+自动识别服务器卡数并映射全部加速卡（NPU: 全部 davinci 设备 + 驱动挂载；
+GPU: --runtime nvidia --gpus all）。用户选择模型目录、kvcache 目录与自定义挂载。
+"""
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Dict, List
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QDialog,
     QFormLayout,
     QFrame,
@@ -24,7 +27,6 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QTableWidget,
     QTableWidgetItem,
-    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -33,15 +35,15 @@ from ...core.container_manager import (ContainerCreateConfig,
                                        ContainerManager, check_shared_fs,
                                        evaluate_shared_fs)
 from ...core.docker_manager import DockerManager
-from ...core.models import VolumeMount
+from ...core.models import DeviceType, UCMInfo, VolumeMount
 from ...core.ssh_client import SSHClient
 from ..state import AppContext
-from .common import (ParallelTaskPanel, RemoteDirDialog, combo_ref,
-                     fill_image_combo, image_from_ref, setup_image_combo)
+from .common import (ParallelTaskPanel, QuickTask, RemoteDirDialog, combo_ref,
+                     fill_image_combo, setup_image_combo)
 
 
 class _PathPickRow(QWidget):
-    """路径输入 + 浏览(远端目录, 多服务器可选) """
+    """路径输入 + 浏览（远端目录）"""
 
     def __init__(self, page: "ContainerPage", placeholder: str = "/mnt/..."):
         super().__init__()
@@ -56,20 +58,17 @@ class _PathPickRow(QWidget):
         layout.addWidget(browse)
 
     def _browse(self) -> None:
-        servers = self.page.ctx.selected
-        if not servers:
-            QMessageBox.information(self, "提示", "请先在步骤1选择服务器")
+        server = self.page.ctx.server
+        if server is None:
+            QMessageBox.information(self, "提示", "请先在步骤1勾选要登录的服务器")
             return
 
-        def make_lister(server):
-            def lister(path: str) -> List[str]:
-                with SSHClient(server) as ssh:
-                    return ContainerManager(ssh).list_host_dirs(path)
-            return lister
+        def lister(path: str) -> List[str]:
+            with SSHClient(server) as ssh:
+                return ContainerManager(ssh).list_host_dirs(path)
 
-        listers = {f"{s.name} ({s.host})": make_lister(s) for s in servers}
         start = self.edit.text().strip() or "/"
-        dlg = RemoteDirDialog(self, listers, start=start)
+        dlg = RemoteDirDialog(self, lister, start=start)
         if dlg.exec() == QDialog.Accepted and dlg.selected_path():
             self.edit.setText(dlg.selected_path())
 
@@ -81,37 +80,52 @@ class ContainerPage(QWidget):
     def __init__(self, ctx: AppContext, parent=None):
         super().__init__(parent)
         self.ctx = ctx
+        self._images = []
+        self._ucm_state: Dict[str, UCMInfo] = {}   # 镜像 ref -> UCM 校验结果
+        self._quick_tasks = []                      # 运行中的 QuickTask 引用
 
-        # ---------- 镜像与容器名
+        # ---------- 镜像与容器
         top_box = QGroupBox("1. UCM 镜像与容器")
-        self.image_rows: Dict[str, QComboBox] = {}
-        self.image_form = QFormLayout()
-        self.placeholder = QLabel("请先在「1. 服务器管理」勾选要部署的服务器")
-        self.placeholder.setProperty("role", "hint")
-        self.placeholder.setAlignment(Qt.AlignCenter)
-        self.placeholder.setMinimumHeight(40)
-        top_box.setLayout(QVBoxLayout())
-        top_box.layout().addWidget(self.placeholder)
-        top_box.layout().addLayout(self.image_form)
+        self.image_combo = self._make_image_combo()
+        self.ucm_check_label = QLabel("镜像 UCM：未校验")
+        self.ucm_check_label.setProperty("role", "hint")
+        self.ucm_check_label.setWordWrap(True)
+
+        refresh_img_btn = QPushButton("🔄 刷新镜像")
+        refresh_img_btn.clicked.connect(self._refresh_images)
         self.name_edit = QLineEdit("ucm-vllm")
         self.shm_edit = QLineEdit("512g")
         self.net_edit = QLineEdit("host")
+        self.net_edit.setToolTip(
+            "docker run --net 参数（Ascend 容器使用；NVIDIA 容器固定用 -p 端口映射）")
+
+        img_form = QFormLayout()
+        img_form.addRow("镜像（已装 UCM）", self.image_combo)
+        img_form.addRow("", self.ucm_check_label)
+        top_btns = QHBoxLayout()
+        top_btns.addWidget(refresh_img_btn)
+        top_btns.addStretch(1)
         form = QFormLayout()
         form.addRow("容器名", self.name_edit)
         form.addRow("shm-size", self.shm_edit)
-        form.addRow("网络", self.net_edit)
+        form.addRow("网络(Ascend)", self.net_edit)
         inner = QHBoxLayout()
         inner.addLayout(form)
         inner.addStretch(1)
 
+        top_layout = QVBoxLayout(top_box)
+        top_layout.addLayout(img_form)
+        top_layout.addLayout(top_btns)
+        top_layout.addLayout(inner)
+
         # ---------- kvcache 挂载
-        kv_box = QGroupBox("2. UCM kvcache 持久化挂载目录（多目录须同一共享文件系统）")
+        kv_box = QGroupBox("2. KV Cache 挂载目录")
         self.kv_list = QListWidget()
-        self.kv_list.setMaximumHeight(110)
+        self.kv_list.setMaximumHeight(100)
         kv_add_row = _PathPickRow(self)
         kv_add_btn = QPushButton("➕ 添加目录")
         kv_del_btn = QPushButton("🗑 移除选中")
-        kv_check_btn = QPushButton("🔍 共享文件系统校验")
+        kv_check_btn = QPushButton("🔍 文件系统校验")
         kv_add_btn.clicked.connect(self._kv_add)
         kv_del_btn.clicked.connect(self._kv_del)
         kv_check_btn.clicked.connect(self._kv_check)
@@ -121,8 +135,8 @@ class ContainerPage(QWidget):
         row.addWidget(kv_del_btn)
         row.addWidget(kv_check_btn)
         self.kv_hint = QLabel(
-            "⚠ 多个挂载目录必须位于同一共享文件系统；跨服务器共用时必须是 NFS/3FS 等网络存储。\n"
-            "⚠ 只有「同一种模型 + 同一种部署模式(P节点数、DP/TP 一致)」的服务才能共用同一套挂载目录。")
+            "目录将挂载到容器内相同路径；单机部署本地目录即可，"
+            "多目录须位于同一文件系统。")
         self.kv_hint.setProperty("role", "hint")
         self.kv_hint.setWordWrap(True)
         kv_layout = QVBoxLayout(kv_box)
@@ -132,7 +146,7 @@ class ContainerPage(QWidget):
         self.kv_add_row = kv_add_row
 
         # ---------- 模型与其他挂载
-        mount_box = QGroupBox("3. 模型路径（只读）与其他挂载")
+        mount_box = QGroupBox("3. 模型路径（只读）与自定义挂载")
         self.model_host = _PathPickRow(self, "/data/models/...")
         self.model_container = QLineEdit("/models")
         self.model_ro = QCheckBox("只读(ro)")
@@ -160,50 +174,44 @@ class ContainerPage(QWidget):
         ex_row.addStretch(1)
         ex_layout = QVBoxLayout(mount_box)
         ex_layout.addLayout(mform)
-        ex_layout.addWidget(QLabel("其他挂载："))
+        ex_layout.addWidget(QLabel("自定义挂载："))
         ex_layout.addWidget(self.extra_table, 1)
         ex_layout.addLayout(ex_row)
 
-        # ---------- 命令预览（每服务器一页，可分别编辑）
-        cmd_box = QGroupBox("4. docker run 命令（自动生成，可编辑）")
-        self.cmd_tabs = QTabWidget()
-        self.cmd_edits: Dict[str, QPlainTextEdit] = {}
+        # ---------- 命令预览（可编辑）
+        cmd_box = QGroupBox("4. docker run 命令（自动生成，可编辑后执行）")
+        self.cmd_edit = QPlainTextEdit()
+        self.cmd_edit.setProperty("role", "code")
+        font = QFont("Consolas")
+        font.setStyleHint(QFont.Monospace)
+        self.cmd_edit.setFont(font)
+        self.cmd_edit.setPlaceholderText("点击「生成/刷新命令」生成 docker run 命令")
+        self.cmd_edit.setMinimumHeight(220)
         regen_btn = QPushButton("🔁 生成/刷新命令")
-        regen_btn.clicked.connect(self._regen)
-        create_btn = QPushButton("🚀 创建容器（全部服务器）")
+        create_btn = QPushButton("🚀 创建容器")
         create_btn.setProperty("accent", True)
-        create_btn.clicked.connect(self._create)
         check_ctr_btn = QPushButton("✅ 检查容器内 UCM")
+        regen_btn.clicked.connect(self._regen)
+        create_btn.clicked.connect(self._create)
         check_ctr_btn.clicked.connect(self._check_container_ucm)
         self.cmd_hint = QLabel(
-            "每台服务器一个命令页（卡数/镜像可能不同），可分别编辑；创建时按各页内容执行。")
+            "自动识别服务器卡数并映射全部加速卡（NPU: 全部 davinci 设备 + 驱动挂载；"
+            "GPU: --runtime nvidia --gpus all -p 8000:8000）；命令可编辑，创建时按编辑框内容执行。")
         self.cmd_hint.setProperty("role", "hint")
+        self.cmd_hint.setWordWrap(True)
         btns = QHBoxLayout()
         btns.addWidget(regen_btn)
         btns.addWidget(create_btn)
         btns.addWidget(check_ctr_btn)
         btns.addStretch(1)
         cmd_layout = QVBoxLayout(cmd_box)
-        cmd_layout.addWidget(self.cmd_tabs)
+        cmd_layout.addWidget(self.cmd_edit)
         cmd_layout.addWidget(self.cmd_hint)
         cmd_layout.addLayout(btns)
-        self.cmd_tabs.setMinimumHeight(240)
 
         self.panel = ParallelTaskPanel()
 
-        # 顶部工具行
-        refresh_img_btn = QPushButton("🔄 刷新镜像")
-        check_img_btn = QPushButton("✅ 检查镜像内 UCM")
-        top_row = QHBoxLayout()
-        top_row.addWidget(refresh_img_btn)
-        top_row.addWidget(check_img_btn)
-        top_row.addStretch(1)
-        refresh_img_btn.clicked.connect(self._refresh_images)
-        check_img_btn.clicked.connect(self._check_image_ucm)
-        top_box.layout().addLayout(top_row)
-        top_box.layout().addLayout(inner)
-
-        # ---------- 配置区放入滚动容器：窗口小可滚动，全屏时布局稳定
+        # ---------- 配置区放入滚动容器（窗口小时可滚动）
         config_widget = QWidget()
         config_layout = QVBoxLayout(config_widget)
         config_layout.setContentsMargins(0, 0, 0, 0)
@@ -225,33 +233,78 @@ class ContainerPage(QWidget):
         layout.addWidget(self.panel, 2)
 
     # ------------------------------------------------------------ 辅助
-    def current_server(self) -> Optional[object]:
-        return self.ctx.selected[0] if self.ctx.selected else None
+    def _make_image_combo(self):
+        from PySide6.QtWidgets import QComboBox
+
+        combo = QComboBox()
+        setup_image_combo(combo)
+        combo.setMinimumWidth(440)
+        combo.currentIndexChanged.connect(self._on_image_changed)
+        return combo
 
     def on_enter(self) -> None:
-        for i in reversed(range(self.image_form.count())):
-            item = self.image_form.takeAt(0)
-            if item.widget() is not None:
-                item.widget().deleteLater()
-        self.image_rows.clear()
-        self.placeholder.setVisible(not self.ctx.selected)
-        for s in self.ctx.selected:
-            combo = QComboBox()
-            # 弹层限高(10条)滚动；可输入关键字筛选，但只能选中列表项
-            setup_image_combo(combo)
-            combo.setMinimumWidth(380)
-            self.image_rows[s.id] = combo
-            self.image_form.addRow(f"{s.name} ({s.host})", combo)
-            # 已记录的 UCM 镜像先回显（自动刷新后补全列表）
-            fill_image_combo(combo,
-                             [image_from_ref(self.ctx.images[s.id])]
-                             if self.ctx.images.get(s.id) else [])
-        self._rebuild_cmd_tabs()
-        if self.ctx.selected and not getattr(self, "_image_refs", None):
-            self._refresh_images()
+        self._refresh_images()
+
+    def current_image(self) -> str:
+        return combo_ref(self.image_combo)
+
+    def _run_quick(self, fn, on_done) -> None:
+        """后台快任务：保持引用防止运行中线程被回收，完成后自动清理。"""
+        task = QuickTask(fn, self)
+        task.signals.sig_done.connect(on_done)
+
+        def _cleanup(*_):
+            if task in self._quick_tasks:
+                self._quick_tasks.remove(task)
+
+        task.signals.sig_done.connect(_cleanup)
+        self._quick_tasks.append(task)
+        task.start()
+
+    def _on_image_changed(self, *_) -> None:
+        """选择镜像时自动校验镜像内 UCM 安装情况。"""
+        ref = self.current_image()
+        if not ref:
+            self.ucm_check_label.setText("镜像 UCM：未校验")
+            return
+        if ref in self._ucm_state:
+            self._show_ucm_state(ref)
+            return
+        server = self.ctx.server
+        if server is None:
+            return
+        self.ucm_check_label.setText(f"镜像 UCM：正在检查 {ref} ...")
+
+        def fn():
+            with SSHClient(server) as ssh:
+                return DockerManager(ssh).image_ucm_info(ref)
+
+        def on_done(ucm, error):
+            if error is not None:
+                self._ucm_state[ref] = UCMInfo()
+                self.ucm_check_label.setText(f"✗ 镜像 UCM：检查失败（{error}）")
+                return
+            self._ucm_state[ref] = ucm
+            self._show_ucm_state(ref)
+
+        self._run_quick(fn, on_done)
+
+    def _show_ucm_state(self, ref: str) -> None:
+        ucm = self._ucm_state.get(ref)
+        server = self.ctx.server
+        if ucm is None:
+            return
+        if ucm.installed:
+            self.ucm_check_label.setText(f"✓ 镜像 UCM：已安装 {ucm.version}")
+            if server is not None:
+                self.ctx.images[server.id] = ref
+        else:
+            self.ucm_check_label.setText(
+                f"✗ 镜像 UCM：{ref} 未安装 UCM（请回步骤2构建，或选择其他镜像）")
 
     # ------------------------------------------------------------ 命令生成
-    def _build_config(self, server) -> ContainerCreateConfig:
+    def _build_config(self) -> ContainerCreateConfig:
+        server = self.ctx.server
         model_mount = None
         if self.model_host.text():
             model_mount = VolumeMount(self.model_host.text(),
@@ -259,60 +312,39 @@ class ContainerPage(QWidget):
                                       self.model_ro.isChecked())
         extra_mounts = []
         for row in range(self.extra_table.rowCount()):
-            host = (self.extra_table.item(row, 0).text() if self.extra_table.item(row, 0) else "").strip()
-            cont = (self.extra_table.item(row, 1).text() if self.extra_table.item(row, 1) else "").strip()
+            host = (self.extra_table.item(row, 0).text()
+                    if self.extra_table.item(row, 0) else "").strip()
+            cont = (self.extra_table.item(row, 1).text()
+                    if self.extra_table.item(row, 1) else "").strip()
             ro_item = self.extra_table.item(row, 2)
             ro = ro_item is not None and ro_item.checkState() == Qt.Checked
             if host and cont:
                 extra_mounts.append(VolumeMount(host, cont, ro))
         kv_dirs = [self.kv_list.item(i).text() for i in range(self.kv_list.count())]
-        dev = self.ctx.device_of(server)
-        combo = self.image_rows.get(server.id)
-        image = (combo_ref(combo) if combo is not None else "") \
-            or self.ctx.images.get(server.id, "")
+        dev = self.ctx.device_of(server) if server else None
         return ContainerCreateConfig(
-            image=image, name=self.name_edit.text().strip(),
-            device_type=dev.device_type, device_count=dev.count,
+            image=self.current_image(), name=self.name_edit.text().strip(),
+            device_type=dev.device_type if dev else DeviceType.UNKNOWN,
+            device_count=dev.count if dev else 0,
             shm_size=self.shm_edit.text().strip() or "512g",
             network=self.net_edit.text().strip(),
             kv_cache_dirs=kv_dirs, model_mount=model_mount,
             extra_mounts=extra_mounts)
 
-    def _rebuild_cmd_tabs(self) -> None:
-        """按已选服务器重建命令页签（保留已编辑内容）。"""
-        old_texts = {sid: e.toPlainText()
-                     for sid, e in self.cmd_edits.items()}
-        self.cmd_tabs.clear()
-        self.cmd_edits.clear()
-        for s in self.ctx.selected:
-            edit = QPlainTextEdit()
-            edit.setProperty("role", "code")
-            font = QFont("Consolas")
-            font.setStyleHint(QFont.Monospace)
-            edit.setFont(font)
-            edit.setPlaceholderText("点击「生成/刷新命令」生成 docker run 命令")
-            if s.id in old_texts and old_texts[s.id].strip():
-                edit.setPlainText(old_texts[s.id])
-            self.cmd_edits[s.id] = edit
-            self.cmd_tabs.addTab(edit, s.name)
-
     def _regen(self) -> None:
-        if not self.ctx.selected:
-            QMessageBox.information(self, "提示", "请先在步骤1选择服务器")
+        server = self.ctx.server
+        if server is None:
+            QMessageBox.information(self, "提示", "请先在步骤1勾选要登录的服务器")
             return
-        self._rebuild_cmd_tabs()
-        for s in self.ctx.selected:
-            try:
-                cfg = self._build_config(s)
-                cmd = ContainerManager.generate_run_command(cfg)
-            except Exception as exc:
-                QMessageBox.warning(self, "生成失败", f"{s.name}: {exc}")
-                return
-            self.cmd_edits[s.id].setPlainText(cmd)
+        try:
+            cmd = ContainerManager.generate_run_command(self._build_config())
+        except Exception as exc:
+            QMessageBox.warning(self, "生成失败", str(exc))
+            return
+        self.cmd_edit.setPlainText(cmd)
 
-    def command_text(self, server_id: str) -> str:
-        edit = self.cmd_edits.get(server_id)
-        return edit.toPlainText() if edit is not None else ""
+    def command_text(self) -> str:
+        return self.cmd_edit.toPlainText()
 
     # ------------------------------------------------------------ kvcache
     def _kv_add(self) -> None:
@@ -333,38 +365,27 @@ class ContainerPage(QWidget):
         if not dirs:
             QMessageBox.information(self, "提示", "请先添加 kvcache 挂载目录")
             return
-        servers = self.ctx.selected
-        if not servers:
+        server = self.ctx.server
+        if server is None:
             return
-        reports: Dict[str, object] = {}
 
-        def make_fn(server):
-            def fn(ssh, tctx):
-                tctx.progress(50, "df 检查中")
-                report = check_shared_fs({server.id: ssh}, dirs)
-                for e in report.entries:
-                    tctx.log(f"[{server.name}] {e.path} -> {e.source} ({e.fstype})"
-                             if not e.error else f"[{server.name}] {e.path} {e.error}")
-                reports[server.id] = report
-                tctx.progress(100, "完成")
-            return fn
+        def fn():
+            with SSHClient(server) as ssh:
+                return check_shared_fs(ssh, dirs)
 
-        def on_finished(all_ok: bool) -> None:
-            if not reports:
+        def on_done(report, error):
+            if error is not None or report is None:
+                QMessageBox.warning(self, "校验失败", str(error))
                 return
-            entries = []
-            for rep in reports.values():
-                entries.extend(rep.entries)
-            merged = evaluate_shared_fs(entries)
+            merged = evaluate_shared_fs(report.entries)
             icon = QMessageBox.Information if merged.ok else QMessageBox.Warning
-            box = QMessageBox(icon, "共享文件系统校验",
+            box = QMessageBox(icon, "文件系统校验",
                               merged.message
                               + ("\n\n" + "\n".join(merged.warnings)
                                  if merged.warnings else ""))
             box.exec()
 
-        self.panel.run_tasks([(s, make_fn(s)) for s in servers],
-                             "共享FS校验", on_finished=on_finished)
+        self._run_quick(fn, on_done)
 
     def _extra_add(self) -> None:
         row = self.extra_table.rowCount()
@@ -383,95 +404,89 @@ class ContainerPage(QWidget):
 
     # ------------------------------------------------------------ 镜像操作
     def _refresh_images(self) -> None:
-        def make_fn(server):
-            def fn(ssh, tctx):
-                dm = DockerManager(ssh)
-                images = dm.list_images()
-                tctx.log("\n".join(f"{im.ref}    {im.size}" for im in images))
-                self._image_refs = getattr(self, "_image_refs", {})
-                self._image_refs[server.id] = images
-            return fn
+        server = self.ctx.server
+        if server is None:
+            fill_image_combo(self.image_combo, [])
+            return
 
-        def on_finished(all_ok: bool) -> None:
-            if not all_ok:
+        def fn():
+            with SSHClient(server) as ssh:
+                return DockerManager(ssh).list_images()
+
+        def on_done(images, error):
+            if error is not None:
                 return
-            refs_map = getattr(self, "_image_refs", {})
-            for sid, combo in self.image_rows.items():
-                fill_image_combo(combo, refs_map.get(sid) or [],
-                                 current=self.ctx.images.get(sid, ""))
+            self._images = images or []
+            current = self.ctx.images.get(server.id, "")
+            fill_image_combo(self.image_combo, self._images, current=current)
+            # fill_image_combo 内部 blockSignals，手动触发选中镜像的 UCM 校验
+            if self.current_image():
+                self._on_image_changed()
 
-        self.panel.run_tasks([(s, make_fn(s)) for s in self.ctx.selected],
-                             "刷新镜像", on_finished=on_finished)
-
-    def _check_image_ucm(self) -> None:
-        def make_fn(server):
-            def fn(ssh, tctx):
-                combo = self.image_rows.get(server.id)
-                ref = combo_ref(combo) if combo is not None else ""
-                if not ref:
-                    raise RuntimeError("未选择镜像（请先刷新镜像列表）")
-                ucm = DockerManager(ssh).image_ucm_info(ref)
-                tctx.log(f"{ref}: {ucm}")
-                if not ucm.installed:
-                    raise RuntimeError(f"镜像 {ref} 未安装 UCM，请回到步骤2构建")
-                self.ctx.images[server.id] = ref
-            return fn
-
-        self.panel.run_tasks([(s, make_fn(s)) for s in self.ctx.selected],
-                             "检查镜像 UCM")
+        self._run_quick(fn, on_done)
 
     # ------------------------------------------------------------ 创建
     def _create(self) -> None:
-        servers = self.ctx.selected
-        if not servers:
-            QMessageBox.information(self, "提示", "请先在步骤1选择服务器")
+        server = self.ctx.server
+        if server is None:
+            QMessageBox.information(self, "提示", "请先在步骤1勾选要登录的服务器")
             return
-        commands: Dict[str, str] = {}
-        for s in servers:
-            text = self.command_text(s.id)
-            if not text.strip():
-                try:
-                    text = ContainerManager.generate_run_command(self._build_config(s))
-                    self.cmd_edits[s.id].setPlainText(text)
-                except Exception as exc:
-                    QMessageBox.warning(self, "参数错误", f"{s.name}: {exc}")
-                    return
-            commands[s.id] = text
+        ref = self.current_image()
+        if not ref:
+            QMessageBox.warning(self, "参数错误", "请先选择镜像（刷新镜像列表后选择）")
+            return
+        ucm = self._ucm_state.get(ref)
+        if ucm is None:
+            QMessageBox.warning(
+                self, "未校验 UCM",
+                f"镜像 {ref} 的 UCM 安装情况尚未校验完成，请稍候或重新选择镜像。")
+            return
+        if not ucm.installed:
+            QMessageBox.warning(
+                self, "镜像未安装 UCM",
+                f"镜像 {ref} 未安装 UCM。\n请回步骤2构建带 UCM 的镜像，或选择其他镜像。")
+            return
 
-        def make_fn(server):
-            cmd = commands[server.id]
+        text = self.command_text()
+        if not text.strip():
+            try:
+                text = ContainerManager.generate_run_command(self._build_config())
+                self.cmd_edit.setPlainText(text)
+            except Exception as exc:
+                QMessageBox.warning(self, "参数错误", str(exc))
+                return
 
-            def fn(ssh, tctx):
-                tctx.progress(20, "创建容器...")
-                cm = ContainerManager(ssh, DockerManager(ssh))
-                tctx.log("$ " + cmd.replace("\n", " \\\n"))
-                cm.create(cmd, on_line=tctx.log)
-                name = self.name_edit.text().strip()
-                self.ctx.containers[server.id] = name
-                tctx.progress(100, f"容器 {name} 已创建")
-            return fn
+        cmd = text
+
+        def fn(ssh, tctx):
+            tctx.progress(20, "创建容器...")
+            cm = ContainerManager(ssh, DockerManager(ssh))
+            tctx.log("$ " + cmd.replace("\n", " \\\n"))
+            cm.create(cmd, on_line=tctx.log)
+            name = self.name_edit.text().strip()
+            self.ctx.containers[server.id] = name
+            tctx.progress(100, f"容器 {name} 已创建")
 
         def on_finished(all_ok: bool) -> None:
             if all_ok:
                 QMessageBox.information(
                     self, "完成",
                     f"容器创建完成: {self.name_edit.text().strip()}\n"
-                    "建议执行「检查容器内 UCM」后进入下一步。")
+                    "可执行「检查容器内 UCM」确认容器可用。")
 
-        self.panel.run_tasks([(s, make_fn(s)) for s in servers],
-                             "创建容器", on_finished=on_finished)
+        self.panel.run_tasks([(server, fn)], "创建容器", on_finished=on_finished)
 
     def _check_container_ucm(self) -> None:
+        server = self.ctx.server
+        if server is None:
+            return
         name = self.name_edit.text().strip()
 
-        def make_fn(server):
-            def fn(ssh, tctx):
-                ucm = DockerManager(ssh).container_ucm_info(name)
-                tctx.log(f"容器 {name}: {ucm}")
-                if not ucm.installed:
-                    raise RuntimeError(f"容器 {name} 内未检测到 UCM")
-                self.ctx.containers[server.id] = name
-            return fn
+        def fn(ssh, tctx):
+            ucm = DockerManager(ssh).container_ucm_info(name)
+            tctx.log(f"容器 {name}: {ucm}")
+            if not ucm.installed:
+                raise RuntimeError(f"容器 {name} 内未检测到 UCM")
+            self.ctx.containers[server.id] = name
 
-        self.panel.run_tasks([(s, make_fn(s)) for s in self.ctx.selected],
-                             "检查容器 UCM")
+        self.panel.run_tasks([(server, fn)], "检查容器 UCM")

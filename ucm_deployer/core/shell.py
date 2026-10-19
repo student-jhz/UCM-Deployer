@@ -1,27 +1,25 @@
 # -*- coding: utf-8 -*-
-"""shell 工具：安全的远程命令引号处理。"""
+"""远端 shell 命令的引号与续行处理。"""
 from __future__ import annotations
 
 import re
 
-_SAFE = re.compile(r"^[A-Za-z0-9_@%+=:,./-]+$")
+_SAFE = re.compile(r"^[A-Za-z0-9_./:=,@%+~-]+$")
 
 
-def shq(text: str) -> str:
-    """单引号包裹，用于在远端 bash 中安全引用一个词。
+def shq(s: str) -> str:
+    """安全字符串原样返回；否则单引号包裹（内嵌单引号转义为 '\\''）。"""
+    s = str(s)
+    if _SAFE.match(s) and not s.startswith("-"):
+        return s
+    return "'" + s.replace("'", "'\\''") + "'"
 
-    与 shlex.quote 行为一致（POSIX shell）。
-    """
-    text = str(text)
-    if not text:
-        return "''"
-    if _SAFE.match(text):
-        return text
-    return "'" + text.replace("'", "'\"'\"'") + "'"
+
+_LINE_CONT = re.compile(r"\\\r?\n")
 
 
 def flatten_command(cmd: str) -> str:
-    """把带反斜杠续行的多行命令压成单行（保留引号内空格）。"""
-    text = cmd.replace("\\\r\n", "\n").replace("\\\n", "\n")
-    parts = [line.strip() for line in text.split("\n")]
-    return " ".join(p for p in parts if p)
+    """把多行续行命令压成单行（多余空白折叠）。"""
+    one = _LINE_CONT.sub(" ", cmd)
+    one = re.sub(r"\s+", " ", one)
+    return one.strip()

@@ -1,181 +1,200 @@
 # -*- coding: utf-8 -*-
-"""模拟 paramiko 的测试替身（FakeSSH 层）。
+"""FakeSSH：paramiko.SSHClient 的脚本化替身（单元测试用，无真实网络）。
 
-覆盖 SSHClient 用到的最小 paramiko 表面：
-- SSHClient.connect / get_transport / open_sftp / close
-- Transport.open_session / set_keepalive / is_active
-- Channel.exec_command / recv / recv_stderr / exit_status...
-- SFTPClient.put / open
-
-通过脚本化响应（正则 -> 输出）模拟远端命令。
+用法：
+    fake_ssh.add(r"^docker info", stdout="ok\\n")     # 按正则返回预设输出
+    ssh = SSHClient(server); ssh.connect()            # 经 fixture 替换后走 Fake
+    ssh._client.channels[-1].executed_command         # 检查实际执行的命令
 """
 from __future__ import annotations
 
 import re
-from typing import Dict, List, NamedTuple, Optional
-
-
-class ScriptedResponse(NamedTuple):
-    pattern: str      # 对完整命令做 re.search
-    exit_code: int = 0
-    stdout: str = ""
-    stderr: str = ""
-    hang: bool = False  # 模拟永不结束的命令（测超时）
+import time
+from typing import Dict, List, Optional, Tuple
 
 
 class FakeChannel:
-    def __init__(self, server: "FakeSSHClient"):
-        self._server = server
+    def __init__(self, session: "FakeSSHSession"):
+        self._session = session
+        self.executed_command = ""
+        self._combine = False
         self._out = b""
         self._err = b""
-        self._exit = 0
-        self._hang = False
-        self._combine = False
-        self.executed_command: Optional[str] = None
+        self._exit_code = 0
+        self._closed = False
 
-    # ---- paramiko Channel API ----
     def set_combine_stderr(self, flag: bool) -> None:
+        # paramiko 协议在 exec_command 之前调用；实际合并在 exec 填充时进行
         self._combine = flag
 
-    def settimeout(self, timeout) -> None:
-        pass
-
-    def setblocking(self, flag: bool) -> None:
-        pass
-
-    def exec_command(self, command: str) -> None:
-        self.executed_command = command
-        resp = self._server.match(command)
-        if resp is None:
-            self._out, self._err, self._exit = b"", b"bash: command not found\n", 127
-            return
-        self._out = resp.stdout.encode("utf-8")
-        self._err = resp.stderr.encode("utf-8")
-        self._exit = resp.exit_code
-        self._hang = resp.hang
+    def exec_command(self, cmd: str) -> None:
+        self.executed_command = cmd
+        matched = self._session.match(cmd)
+        if matched is None:
+            self._out, self._err = b"", b"bash: command not found\n"
+            self._exit_code = 127
+        else:
+            stdout, stderr, code = matched
+            self._out = stdout.encode("utf-8")
+            self._err = stderr.encode("utf-8")
+            self._exit_code = code
         if self._combine:
-            self._out = self._out + self._err
+            self._out += self._err
             self._err = b""
 
+    # ---------------------------------------------------------- stream API
     def recv_ready(self) -> bool:
         return bool(self._out)
 
     def recv_stderr_ready(self) -> bool:
         return bool(self._err)
 
-    def recv(self, n: int = 4096) -> bytes:
+    def recv(self, n: int) -> bytes:
         data, self._out = self._out[:n], self._out[n:]
         return data
 
-    def recv_stderr(self, n: int = 4096) -> bytes:
+    def recv_stderr(self, n: int) -> bytes:
         data, self._err = self._err[:n], self._err[n:]
         return data
 
     def exit_status_ready(self) -> bool:
-        if self._hang:
-            return False
         return not self._out and not self._err
 
     def recv_exit_status(self) -> int:
-        return self._exit
+        return self._exit_code
 
     def close(self) -> None:
-        pass
+        self._closed = True
 
 
 class FakeTransport:
-    def __init__(self, server: "FakeSSHClient"):
-        self._server = server
+    def __init__(self, client: "FakeSSHClient"):
+        self._client = client
 
-    def set_keepalive(self, n: int) -> None:
+    def set_keepalive(self, seconds: int) -> None:
         pass
 
     def is_active(self) -> bool:
-        return self._server.connected
+        return self._client.connected
 
-    def open_session(self, timeout=None) -> FakeChannel:
-        chan = FakeChannel(self._server)
-        self._server.channels.append(chan)
+    def open_session(self, timeout: float = None) -> FakeChannel:
+        session = self._client.current_session
+        chan = FakeChannel(session)
+        session.channels.append(chan)
         return chan
 
-
-class FakeSFTPFile:
-    def __init__(self, store: Dict[str, bytes], path: str, mode: str):
-        self._store = store
-        self._path = path
-        self._bin = "b" in mode
-        self._read = "r" in mode
-        if not self._read:
-            self._store[path] = b""
-
-    def write(self, data) -> int:
-        if isinstance(data, str):
-            data = data.encode("utf-8")
-        self._store[self._path] += data
-        return len(data)
-
-    def read(self, n: int = -1) -> bytes:
-        content = self._store.get(self._path, b"")
-        if n < 0:
-            return content
-        return content[:n]
-
-    def close(self) -> None:
+    def join(self, timeout: float = None) -> None:  # pragma: no cover
         pass
-
-    def __enter__(self) -> "FakeSFTPFile":
-        return self
-
-    def __exit__(self, *exc) -> None:
-        self.close()
 
 
 class FakeSFTP:
-    def __init__(self, server: "FakeSSHClient"):
-        self._server = server
-        self.puts: List[tuple] = []
+    """内存文件系统 + put/get 记录。"""
 
-    def put(self, local_path: str, remote_path: str, callback=None) -> None:
+    def __init__(self, client: "FakeSSHClient"):
+        self._client = client
+        self.puts: List[Tuple[str, str]] = []
+        self.gets: List[Tuple[str, str]] = []
+
+    def put(self, local: str, remote: str, callback=None) -> None:
         import os
 
-        self.puts.append((local_path, remote_path))
+        self.puts.append((local, remote))
+        with open(local, "rb") as fh:
+            self._client.files[remote] = fh.read()
         if callback is not None:
-            size = os.path.getsize(local_path) if os.path.exists(local_path) else 4096
-            for i in range(1, 11):
-                callback(size * i // 10, size)
+            size = os.path.getsize(local)
+            callback(size, size)
 
-    def open(self, path: str, mode: str = "r") -> FakeSFTPFile:
-        return FakeSFTPFile(self._server.files, path, mode)
+    def get(self, remote: str, local: str, callback=None) -> None:
+        self.gets.append((remote, local))
+        data = self._client.files.get(remote, b"")
+        with open(local, "wb") as fh:
+            fh.write(data)
+        if callback is not None:
+            callback(len(data), len(data))
+
+    def stat(self, remote: str):
+        class _St:
+            st_size = len(self._client.files.get(remote, b""))
+        return _St()
+
+    def open(self, remote: str, mode: str = "rb"):
+        import io
+
+        data = self._client.files.get(remote, b"")
+
+        class _File(io.BytesIO):
+            def close(self) -> None:
+                if "w" in mode or "a" in mode or "+" in mode:
+                    self._client.files[remote] = self.getvalue()
+                super().close()
+
+        f = _File(data if "r" in mode else b"")
+        f._client = self._client
+        return f
 
     def close(self) -> None:
         pass
 
 
+class FakeSSHSession:
+    """一次 SSH 连接内的脚本化命令匹配。"""
+
+    def __init__(self, client: "FakeSSHClient"):
+        self.client = client
+        self.channels: List[FakeChannel] = []
+
+    def match(self, cmd: str) -> Optional[Tuple[str, str, int]]:
+        # 后注册的脚本优先（同一命令多次 add 时，最新一次生效）
+        for pattern, stdout, stderr, code in reversed(self.client.scripts):
+            if re.search(pattern, cmd):
+                return stdout, stderr, code
+        return None
+
+
 class FakeSSHClient:
-    """paramiko.SSHClient 的替身。"""
+    """paramiko.SSHClient 替身。脚本通过 add() 注册（全局，按注册顺序匹配）。"""
 
     connect_exception: Optional[Exception] = None
     instances: List["FakeSSHClient"] = []
 
     def __init__(self):
-        self.script: List[ScriptedResponse] = []
         self.connected = False
-        self.channels: List[FakeChannel] = []
-        self.sftp_sessions: List[FakeSFTP] = []
-        self.connect_kwargs: Optional[Dict] = None
+        self.closed = False
         self.files: Dict[str, bytes] = {}
+        self.scripts: List[Tuple[str, str, str, int]] = []
+        self.sftp_sessions: List[FakeSFTP] = []
+        self.current_session = FakeSSHSession(self)
         FakeSSHClient.instances.append(self)
 
+    @property
+    def channels(self) -> List[FakeChannel]:
+        return self.current_session.channels
+
+    # ---------------------------------------------------------- 脚本注册
+    def add(self, pattern: str, stdout: str = "", stderr: str = "",
+            exit_code: int = 0) -> None:
+        self.scripts.append((pattern, stdout, stderr, exit_code))
+
+    # ---------------------------------------------------------- SSHClient API
     def set_missing_host_key_policy(self, policy) -> None:
         pass
 
     def connect(self, **kwargs) -> None:
         if FakeSSHClient.connect_exception is not None:
-            raise FakeSSHClient.connect_exception
-        self.connect_kwargs = kwargs
+            exc = FakeSSHClient.connect_exception
+            FakeSSHClient.connect_exception = None
+            raise exc
         self.connected = True
+        self.current_session = FakeSSHSession(self)
 
-    def get_transport(self) -> FakeTransport:
+    def close(self) -> None:
+        self.connected = False
+        self.closed = True
+
+    def get_transport(self) -> Optional[FakeTransport]:
+        if not self.connected:
+            return None
         return FakeTransport(self)
 
     def open_sftp(self) -> FakeSFTP:
@@ -183,18 +202,16 @@ class FakeSSHClient:
         self.sftp_sessions.append(sftp)
         return sftp
 
-    def close(self) -> None:
-        self.connected = False
 
-    # ---- 脚本配置 ----
-    def match(self, command: str) -> Optional[ScriptedResponse]:
-        # 后注册的优先（便于测试中覆盖同 pattern 的响应）
-        for resp in reversed(self.script):
-            if re.search(resp.pattern, command):
-                return resp
-        return None
+class FakeParamikoModule:
+    """paramiko 模块替身（含 AutoAddPolicy 等符号）。"""
 
-    def add(self, pattern: str, exit_code: int = 0, stdout: str = "",
-            stderr: str = "", hang: bool = False) -> "FakeSSHClient":
-        self.script.append(ScriptedResponse(pattern, exit_code, stdout, stderr, hang))
-        return self
+    SSHClient = FakeSSHClient
+
+    class AutoAddPolicy:
+        pass
+
+    class RSAKey:  # pragma: no cover
+        @staticmethod
+        def generate(bits: int):
+            raise NotImplementedError

@@ -1,21 +1,13 @@
 # -*- coding: utf-8 -*-
-"""远端 docker 操作封装（镜像 / 容器 / UCM 检查）。"""
+"""远端 docker 操作封装：镜像/容器列表、load/build/run、UCM 检查。"""
 from __future__ import annotations
 
 import re
 from typing import Callable, List, Optional
 
-from .models import CommandResult, DockerContainer, DockerImage, UCMInfo
-from .shell import shq
+from .models import CommandResult, DockerImage, UCMInfo
 from .ssh_client import SSHClient
-
-_IMAGE_FMT = r"{{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.Size}}\t{{.CreatedAt}}"
-_CONTAINER_FMT = r"{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.State}}"
-
-# 在镜像/容器内检查 UCM 是否安装（兼容包名 uc-manager / ucm 与不同 python 入口）
-_PIP_SHOW = ("pip show uc-manager 2>/dev/null || pip show ucm 2>/dev/null "
-             "|| python3 -m pip show uc-manager 2>/dev/null "
-             "|| python -m pip show ucm 2>/dev/null")
+from .shell import shq
 
 
 class DockerError(Exception):
@@ -28,7 +20,7 @@ class DockerManager:
 
     # ------------------------------------------------------------ 基础
     def check_docker(self) -> bool:
-        return self.ssh.exec("docker info >/dev/null 2>&1", timeout=60).ok
+        return self.ssh.exec("docker info >/dev/null 2>&1", timeout=30).ok
 
     def docker_version(self) -> str:
         res = self.ssh.exec("docker --version", timeout=30)
@@ -36,141 +28,93 @@ class DockerManager:
 
     # ------------------------------------------------------------ 镜像
     def list_images(self) -> List[DockerImage]:
-        res = self.ssh.exec(f"docker images --format '{_IMAGE_FMT}'", timeout=60)
+        res = self.ssh.exec(
+            "docker images --format '{{.Repository}}\\t{{.Tag}}\\t{{.ID}}\\t{{.Size}}\\t{{.CreatedAt}}'",
+            timeout=60)
         if not res.ok:
-            raise DockerError("获取镜像列表失败: " + (res.stderr.strip() or res.stdout.strip())[:300])
-        return self._parse_images(res.stdout)
-
-    @staticmethod
-    def _parse_images(stdout: str) -> List[DockerImage]:
-        images: List[DockerImage] = []
-        for line in stdout.strip().splitlines():
-            parts = [p.strip() for p in line.split("\t")]
-            if len(parts) < 3 or not parts[0]:
-                continue
-            images.append(DockerImage(
-                repository=parts[0],
-                tag=parts[1] if len(parts) > 1 else "",
-                image_id=parts[2] if len(parts) > 2 else "",
-                size=parts[3] if len(parts) > 3 else "",
-                created=parts[4] if len(parts) > 4 else "",
-            ))
+            raise DockerError(f"获取镜像列表失败: {res.stderr.strip()[:200]}")
+        images = []
+        for line in res.stdout.splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 3:
+                images.append(DockerImage(
+                    repository=parts[0], tag=parts[1] if len(parts) > 1 else "",
+                    image_id=parts[2] if len(parts) > 2 else "",
+                    size=parts[3] if len(parts) > 3 else "",
+                    created=parts[4] if len(parts) > 4 else ""))
         return images
 
     def image_exists(self, ref: str) -> bool:
-        ref = ref.strip()
-        for im in self.list_images():
-            if im.ref == ref or im.image_id == ref:
-                return True
-        return False
+        res = self.ssh.exec(
+            f"docker image inspect {shq(ref)} >/dev/null 2>&1", timeout=30)
+        return res.ok
 
-    def load_image(self, remote_tar: str, on_line: Optional[Callable[[str], None]] = None,
-                   timeout: float = 3600) -> List[str]:
-        """docker load 并返回加载出的镜像引用列表。"""
-        cmd = f"docker load -i {shq(remote_tar)}"
-        res = self.ssh.exec_stream(cmd, on_line=on_line, timeout=timeout)
+    def load_image(self, remote_tar: str,
+                   on_line: Optional[Callable[[str], None]] = None) -> List[str]:
+        """docker load 并解析加载出的镜像引用列表。"""
+        res = self.ssh.exec_stream(f"docker load -i {shq(remote_tar)}",
+                                   on_line=on_line, timeout=3600)
         if not res.ok:
-            raise DockerError(f"docker load 失败(退出码 {res.exit_code})，详见日志")
-        return re.findall(r"Loaded image(?: ID)?:\s*(\S+)", res.stdout)
-
-    def pull_image(self, ref: str, on_line: Optional[Callable[[str], None]] = None,
-                   timeout: float = 3600) -> CommandResult:
-        res = self.ssh.exec_stream(f"docker pull {shq(ref)}", on_line=on_line, timeout=timeout)
-        if not res.ok:
-            raise DockerError(f"docker pull {ref} 失败(退出码 {res.exit_code})，详见日志")
-        return res
+            raise DockerError(f"docker load 失败: {res.stderr.strip()[:300]}")
+        refs = []
+        for m in re.finditer(r"(?:Loaded image|Loaded image ID):\s*(\S+)",
+                             res.stdout):
+            refs.append(m.group(1))
+        return refs
 
     def build(self, context_dir: str, tag: str,
-              on_line: Optional[Callable[[str], None]] = None,
-              timeout: float = 7200) -> CommandResult:
+              on_line: Optional[Callable[[str], None]] = None) -> CommandResult:
         cmd = f"docker build -t {shq(tag)} {shq(context_dir)}"
-        res = self.ssh.exec_stream(cmd, on_line=on_line, timeout=timeout)
+        res = self.ssh.exec_stream(cmd, on_line=on_line, timeout=7200)
         if not res.ok:
-            raise DockerError(f"docker build 失败(退出码 {res.exit_code})，详见日志")
+            raise DockerError(
+                f"docker build 失败(退出码 {res.exit_code}): "
+                f"{(res.stderr or res.stdout).strip()[:400]}")
         return res
 
     # ------------------------------------------------------------ UCM 检查
     def image_ucm_info(self, image_ref: str) -> UCMInfo:
-        """在镜像里跑 pip show 检查 UCM（--rm 一次性容器）。"""
-        cmd = (f"docker run --rm --entrypoint /bin/sh {shq(image_ref)} "
-               f"-c {shq(_PIP_SHOW)}")
-        res = self.ssh.exec(cmd, timeout=600)
-        if res.exit_code == 125:
-            raise DockerError(f"无法运行镜像 {image_ref}: " + res.stderr.strip()[:300])
-        return UCMInfo.from_pip_show(res.stdout)
+        """检查镜像内是否安装 UCM（pip show uc-manager）。"""
+        cmd = (f"docker run --rm --entrypoint /bin/sh {shq(image_ref)} -c "
+               f"{shq('pip show uc-manager 2>/dev/null || pip show ucm 2>/dev/null')}")
+        res = self.ssh.exec(cmd, timeout=300)
+        if not res.ok and not res.stdout.strip():
+            return UCMInfo()
+        return UCMInfo.from_pip_show(res.stdout + "\n" + res.stderr)
 
-    def container_ucm_info(self, name: str) -> UCMInfo:
-        """在运行中的容器里检查 UCM。"""
-        container = self.get_container(name)
-        if container is not None and container.state != "running":
-            raise DockerError(
-                f"容器 {name} 未运行(state={container.state})，请先启动容器或改用镜像检查")
-        cmd = f"docker exec {shq(name)} /bin/sh -c {shq(_PIP_SHOW)}"
+    def container_ucm_info(self, container: str) -> UCMInfo:
+        """检查运行中容器内是否安装 UCM。"""
+        res = self.ssh.exec(f"docker inspect -f '{{{{.State.Running}}}}' "
+                            f"{shq(container)}", timeout=30)
+        if not res.ok or res.stdout.strip() != "true":
+            raise DockerError(f"容器 {container} 不存在或未运行")
+        cmd = (f"docker exec {shq(container)} /bin/bash -c "
+               f"{shq('pip show uc-manager 2>/dev/null || pip show ucm 2>/dev/null')}")
         res = self.ssh.exec(cmd, timeout=120)
-        if not res.ok and "is not running" in (res.stderr + res.stdout):
-            raise DockerError(f"容器 {name} 未运行，无法在容器内检查 UCM")
-        return UCMInfo.from_pip_show(res.stdout)
+        if not res.ok and not res.stdout.strip():
+            return UCMInfo()
+        return UCMInfo.from_pip_show(res.stdout + "\n" + res.stderr)
 
     # ------------------------------------------------------------ 容器
-    def list_containers(self, all_containers: bool = True) -> List[DockerContainer]:
-        flag = "-a" if all_containers else ""
-        res = self.ssh.exec(f"docker ps {flag} --format '{_CONTAINER_FMT}'", timeout=60)
-        if not res.ok:
-            raise DockerError("获取容器列表失败: " + (res.stderr.strip() or res.stdout.strip())[:300])
-        return self._parse_containers(res.stdout)
+    def run(self, command: str,
+            on_line: Optional[Callable[[str], None]] = None) -> CommandResult:
+        """执行（用户可编辑过的）docker run 命令。"""
+        return self.ssh.exec_stream(command, on_line=on_line, timeout=600)
 
-    @staticmethod
-    def _parse_containers(stdout: str) -> List[DockerContainer]:
-        containers: List[DockerContainer] = []
-        for line in stdout.strip().splitlines():
-            parts = [p.strip() for p in line.split("\t")]
-            if len(parts) < 3 or not parts[0]:
-                continue
-            containers.append(DockerContainer(
-                container_id=parts[0],
-                names=parts[1] if len(parts) > 1 else "",
-                image=parts[2] if len(parts) > 2 else "",
-                status=parts[3] if len(parts) > 3 else "",
-                state=parts[4] if len(parts) > 4 else "",
-            ))
+    def list_containers(self, all_states: bool = False) -> List[dict]:
+        flag = " -a" if all_states else ""
+        res = self.ssh.exec(
+            "docker ps" + flag +
+            " --format '{{.ID}}\\t{{.Names}}\\t{{.Image}}\\t{{.Status}}'",
+            timeout=30)
+        containers = []
+        if res.ok:
+            for line in res.stdout.splitlines():
+                parts = line.split("\t")
+                if len(parts) >= 3:
+                    containers.append({
+                        "id": parts[0], "names": parts[1],
+                        "image": parts[2],
+                        "status": parts[3] if len(parts) > 3 else "",
+                    })
         return containers
-
-    def get_container(self, name_or_id: str) -> Optional[DockerContainer]:
-        for c in self.list_containers():
-            if c.names == name_or_id or c.container_id.startswith(name_or_id):
-                return c
-        return None
-
-    def run(self, full_cmd: str, on_line: Optional[Callable[[str], None]] = None,
-            timeout: float = 600) -> CommandResult:
-        """执行用户编辑后的完整 docker run 命令。"""
-        if not full_cmd.strip().startswith("docker run"):
-            raise DockerError("命令必须以 'docker run' 开头")
-        res = self.ssh.exec_stream(full_cmd, on_line=on_line, timeout=timeout)
-        if not res.ok:
-            raise DockerError(f"docker run 失败(退出码 {res.exit_code})，详见日志")
-        return res
-
-    def exec_in_container(self, container: str, cmd: str, detach: bool = False,
-                          on_line: Optional[Callable[[str], None]] = None,
-                          timeout: Optional[float] = 300) -> CommandResult:
-        d = "-d " if detach else ""
-        full = f"docker exec {d}{shq(container)} /bin/bash -c {shq(cmd)}"
-        if detach:
-            return self.ssh.exec(full, timeout=timeout or 60)
-        return self.ssh.exec_stream(full, on_line=on_line, timeout=timeout)
-
-    def copy_to_container(self, src: str, container: str, dst: str,
-                          timeout: float = 600) -> CommandResult:
-        res = self.ssh.exec(f"docker cp {shq(src)} {shq(container + ':' + dst)}",
-                            timeout=timeout)
-        if not res.ok:
-            raise DockerError("docker cp 失败: " + (res.stderr.strip() or res.stdout.strip())[:300])
-        return res
-
-    def stop_container(self, name: str, timeout_s: int = 30) -> CommandResult:
-        return self.ssh.exec(f"docker stop -t {int(timeout_s)} {shq(name)}", timeout=timeout_s + 60)
-
-    def remove_container(self, name: str, force: bool = True) -> CommandResult:
-        f = "-f" if force else ""
-        return self.ssh.exec(f"docker rm {f} {shq(name)}", timeout=120)

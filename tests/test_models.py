@@ -1,67 +1,60 @@
 # -*- coding: utf-8 -*-
-from ucm_deployer.core.models import (
-    CommandResult,
-    DeviceInfo,
-    DeviceType,
-    DockerImage,
-    ServerInfo,
-    UCMInfo,
-    VolumeMount,
-)
+from ucm_deployer.core.models import (DeviceInfo, DeviceType, DockerImage,
+                                      ServerInfo, UCMInfo, VolumeMount)
 
 
-def test_server_info_roundtrip():
-    s = ServerInfo.create(name="node1", host="10.0.0.1", port=2222,
-                          username="root", password="pw", remark="测试机")
-    s.device = DeviceInfo(DeviceType.ASCEND, "Ascend 910B3", 8)
-    d = s.to_dict(include_secret=True)
-    assert "password" in d
-    s2 = ServerInfo.from_dict(d)
-    assert s2.id == s.id
-    assert s2.host == s.host and s2.port == 2222
-    assert s2.device and s2.device.count == 8
-    assert s2.device.device_type == DeviceType.ASCEND
+def test_device_info_roundtrip():
+    d = DeviceInfo(DeviceType.ASCEND, "Ascend 910B3", 8, arch="aarch64")
+    d2 = DeviceInfo.from_dict(d.to_dict())
+    assert d2.device_type == DeviceType.ASCEND
+    assert d2.model == "Ascend 910B3"
+    assert d2.count == 8
+    assert d2.arch == "aarch64"
+    assert d2.display == "Ascend 910B3 x8"
 
 
-def test_server_info_endpoint():
-    s = ServerInfo.create(name="n", host="1.2.3.4", port=22)
-    assert s.endpoint == "1.2.3.4:22"
-
-
-def test_device_info_bad_enum():
-    d = DeviceInfo.from_dict({"device_type": "tpu", "model": "x", "count": 4})
+def test_device_info_unknown():
+    d = DeviceInfo.from_dict({"device_type": "bogus"})
     assert d.device_type == DeviceType.UNKNOWN
-    assert d.count == 4
+    assert d.display == "未检测"
+    assert DeviceInfo.from_dict(None).count == 0
 
 
-def test_command_result():
-    r = CommandResult("cmd", 0, "out", "")
-    assert r.ok and r.output == "out"
-    r2 = CommandResult("cmd", 1, "out", "err")
-    assert not r2.ok and r2.output == "out\nerr"
+def test_server_info_roundtrip_without_secret():
+    s = ServerInfo.create(name="n1", host="10.0.0.1", password="pw")
+    d = s.to_dict()
+    assert "password" not in d
+    s2 = ServerInfo.from_dict(d)
+    assert s2.password == ""
+    assert s2.endpoint == "10.0.0.1:22"
+    assert s2.name == "n1"
+
+
+def test_server_info_secret_included_on_demand():
+    s = ServerInfo.create(name="n", host="h", password="pw", passphrase="pp")
+    d = s.to_dict(include_secret=True)
+    assert d["password"] == "pw"
+    assert d["passphrase"] == "pp"
 
 
 def test_docker_image_ref():
-    img = DockerImage("quay.io/ascend/vllm-ascend", "v0.23.0-a3", "abc123")
-    assert img.ref == "quay.io/ascend/vllm-ascend:v0.23.0-a3"
-    img2 = DockerImage("repo", "<none>", "abc123")
-    assert img2.ref == "abc123"
+    assert DockerImage("repo/img", "v1").ref == "repo/img:v1"
+    assert DockerImage("repo/img", "<none>", image_id="abc").ref == "abc"
 
 
 def test_ucm_info_from_pip_show():
-    text = "Name: uc-manager\nVersion: 0.2.1\nLocation: /usr/local/lib/python3.10/site-packages\n"
-    info = UCMInfo.from_pip_show(text)
-    assert info.installed
-    assert info.version == "0.2.1"
-    assert info.location.endswith("site-packages")
+    ucm = UCMInfo.from_pip_show("Name: uc-manager\nVersion: 0.2.1\nLocation: /usr/lib")
+    assert ucm.installed
+    assert ucm.version == "0.2.1"
+    assert "0.2.1" in str(ucm)
 
-    empty = UCMInfo.from_pip_show("WARNING: Package(s) not found: ucm")
+    empty = UCMInfo.from_pip_show("")
     assert not empty.installed
+    assert str(empty) == "未安装"
 
 
-def test_volume_mount_arg():
-    m = VolumeMount("/mnt/models", "/models", readonly=True)
-    arg = m.to_docker_arg()
-    assert arg == "-v /mnt/models:/models:ro"
-    m2 = VolumeMount("/data/a b", "/data", False)
-    assert "'/data/a b'" in m2.to_docker_arg()
+def test_volume_mount_docker_arg():
+    m = VolumeMount("/data/models", "/models", readonly=True)
+    assert m.to_docker_arg() == "-v /data/models:/models:ro"
+    m2 = VolumeMount("/a b", "/c")
+    assert m2.to_docker_arg() == "-v '/a b':/c"

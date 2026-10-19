@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""步骤1：服务器管理 —— 登录信息保存/复用、选择部署服务器、设备一致性校验。"""
+"""步骤1：服务器管理 —— 登录信息保存/复用、单选登录、设备探测。"""
 from __future__ import annotations
 
 from typing import Dict, List, Optional
@@ -34,7 +34,7 @@ class ServerEditDialog(QDialog):
     def __init__(self, parent=None, server: Optional[ServerInfo] = None):
         super().__init__(parent)
         self.setWindowTitle("编辑服务器" if server else "添加服务器")
-        self.resize(460, 320)
+        self.resize(460, 340)
 
         self.name_edit = QLineEdit(server.name if server else "")
         self.host_edit = QLineEdit(server.host if server else "")
@@ -83,7 +83,7 @@ class ServerEditDialog(QDialog):
             QMessageBox.warning(self, "参数错误", "主机 IP 不能为空")
             return
         try:
-            port = int(self.port_edit.text() or 22)
+            int(self.port_edit.text() or 22)
         except ValueError:
             QMessageBox.warning(self, "参数错误", "端口必须是数字")
             return
@@ -118,7 +118,7 @@ class ServerEditDialog(QDialog):
 
 
 class ServerPage(QWidget):
-    """步骤1 主页面。"""
+    """步骤1 主页面（单服务器流程：一次只登录一台）。"""
 
     selection_changed = Signal()
 
@@ -129,7 +129,7 @@ class ServerPage(QWidget):
 
         self.table = QTableWidget(0, 8)
         self.table.setHorizontalHeaderLabels(
-            ["部署", "名称", "IP", "端口", "用户", "设备", "卡数", "备注"])
+            ["登录", "名称", "IP", "端口", "用户", "设备", "卡数", "备注"])
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         for col in (1, 2, 4, 5, 6):
@@ -142,7 +142,7 @@ class ServerPage(QWidget):
         edit_btn = QPushButton("✏ 编辑")
         del_btn = QPushButton("🗑 删除")
         test_btn = QPushButton("🔌 测试连接")
-        detect_btn = QPushButton("🔍 探测设备并校验一致性")
+        detect_btn = QPushButton("🔍 探测设备")
         add_btn.clicked.connect(self._add)
         edit_btn.clicked.connect(self._edit)
         del_btn.clicked.connect(self._delete)
@@ -155,7 +155,7 @@ class ServerPage(QWidget):
         btns.addStretch(1)
 
         self.hint = QLabel(
-            "勾选「部署」选择本次要部署的服务器；执行部署前会校验设备型号一致性。"
+            "勾选「登录」选择本次要操作的服务器（一次一台，换勾自动切换）；"
             "登录信息保存在 ~/.ucm_deployer/servers.json（密码加密）。")
         self.hint.setWordWrap(True)
 
@@ -202,6 +202,15 @@ class ServerPage(QWidget):
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
         if item.column() != 0:
             return
+        # 单选语义：勾选某一行时取消其他行的勾选
+        if item.checkState() == Qt.Checked:
+            self.table.itemChanged.disconnect(self._on_item_changed)
+            try:
+                for row in range(self.table.rowCount()):
+                    if row != item.row():
+                        self.table.item(row, 0).setCheckState(Qt.Unchecked)
+            finally:
+                self.table.itemChanged.connect(self._on_item_changed)
         self._collect_selection()
         self.selection_changed.emit()
 
@@ -212,13 +221,14 @@ class ServerPage(QWidget):
             it = self.table.item(row, 0)
             if it is not None and it.checkState() == Qt.Checked and row < len(servers):
                 selected.append(servers[row])
+                break  # 单服务器：只取第一台勾选的
         self.ctx.selected = selected
         self.ctx.reset_after_servers_changed()
 
     def ensure_selection(self) -> bool:
         self._collect_selection()
         if not self.ctx.selected:
-            QMessageBox.warning(self, "未选择服务器", "请先勾选至少一台要部署的服务器")
+            QMessageBox.warning(self, "未选择服务器", "请先勾选要登录的服务器")
             return False
         return True
 
@@ -274,7 +284,8 @@ class ServerPage(QWidget):
             def fn(ssh, tctx):
                 tctx.progress(30, "探测设备...")
                 dev = DeviceDetector(ssh).detect()
-                tctx.log(f"探测结果: {dev.display} ({dev.device_type.value})")
+                tctx.log(f"探测结果: {dev.display} ({dev.device_type.value})"
+                         + (f" / {dev.arch}" if dev.arch else ""))
                 if dev.device_type.value == "unknown" or dev.count <= 0:
                     raise RuntimeError("未探测到加速设备(NPU/GPU)")
                 self._detected[server.id] = dev
@@ -283,19 +294,17 @@ class ServerPage(QWidget):
 
         def on_finished(all_ok: bool) -> None:
             if not all_ok or not self._detected:
-                QMessageBox.warning(self, "设备探测", "部分服务器设备探测失败，详见日志")
+                QMessageBox.warning(self, "设备探测", "设备探测失败，详见日志")
                 return
             self.ctx.devices.update(self._detected)
             for sid, dev in self._detected.items():
                 self.ctx.registry.touch(sid, device=dev)
-            infos = {s.name: (self._detected.get(s.id) or s.device or DeviceInfo())
-                     for s in self.ctx.selected}
-            result = DeviceDetector.verify_consistency(infos)
-            icon = QMessageBox.Information if result.ok else QMessageBox.Warning
-            box = QMessageBox(icon, "设备一致性校验",
-                              result.message + ("\n\n" if result.warnings else "")
-                              + "\n".join(result.warnings))
-            box.exec()
+            dev = next(iter(self._detected.values()))
+            arch = f"，CPU 架构 {dev.arch}" if dev.arch else ""
+            QMessageBox.information(
+                self, "设备探测",
+                f"探测成功：{dev.display}（{dev.device_type.value}）{arch}\n"
+                "步骤2 构建镜像、步骤3 创建容器将按该设备类型自动适配。")
             self.refresh()
             self.selection_changed.emit()
 

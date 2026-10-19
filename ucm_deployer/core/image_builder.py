@@ -1,9 +1,5 @@
 # -*- coding: utf-8 -*-
-"""UCM 镜像构建。
-
-流程：上传 UCM whl（离线时含 wrapt whl / 可选 ucm-toolkit 源码包）
-      -> 生成 Dockerfile -> docker build -> docker run 校验 UCM 安装。
-"""
+"""UCM 镜像构建：匹配校验、Dockerfile 生成、上传构建、UCM 安装校验。"""
 from __future__ import annotations
 
 import os
@@ -11,11 +7,11 @@ import re
 import tarfile
 import tempfile
 import uuid
-from dataclasses import dataclass
-from typing import Callable, List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Callable, List, Optional
 
 from .docker_manager import DockerError, DockerManager
-from .models import UCMInfo
+from .models import DeviceInfo, DeviceType, UCMInfo
 from .shell import shq
 from .ssh_client import SSHClient, SSHError
 from ..utils.log import get_logger
@@ -40,12 +36,11 @@ class ImageBuildConfig:
     """一次镜像构建的完整输入。"""
 
     base_image: str                 # 服务器上的基础镜像 (vllm-ascend/vllm/sglang)
-    image_tag: str                  # 新镜像名（用户可改，有默认建议值）
-    ucm_whl_local: str = ""         # 本地 UCM whl
-    wrapt_whl_local: str = ""       # 本地 wrapt whl（离线模式需要）
-    offline: bool = False           # 服务器是否无法联网
+    image_tag: str                  # 新镜像名（有默认建议值，用户可改）
+    ucm_whl_local: str = ""         # 本地 UCM whl（必填）
+    wrapt_whl_local: str = ""       # 本地 wrapt whl（必填，先于 UCM 离线安装）
     toolkit_dir: str = ""           # 可选：ucm-toolkit 源码目录（源码安装）
-    platform: str = "ascend"        # ascend | nvidia（决定 ENV PLATFORM）
+    platform: str = "ascend"        # ascend | cuda（写入 ENV PLATFORM）
 
     def validate(self) -> None:
         if not self.base_image or not self.base_image.strip():
@@ -54,7 +49,7 @@ class ImageBuildConfig:
             raise ImageBuildError(f"非法的镜像名: {self.image_tag!r}")
         if not self.ucm_whl_local or not os.path.isfile(self.ucm_whl_local):
             raise ImageBuildError(f"UCM whl 文件不存在: {self.ucm_whl_local}")
-        if self.offline and self.wrapt_whl_local and not os.path.isfile(self.wrapt_whl_local):
+        if not self.wrapt_whl_local or not os.path.isfile(self.wrapt_whl_local):
             raise ImageBuildError(f"wrapt whl 文件不存在: {self.wrapt_whl_local}")
         for path in (self.ucm_whl_local, self.wrapt_whl_local):
             if path and re.search(r"\s", os.path.basename(path)):
@@ -71,8 +66,18 @@ class BuildResult:
     error: str = ""
 
 
+@dataclass
+class MatchResult:
+    """服务器/镜像/安装包 匹配校验结果。"""
+
+    ok: bool
+    message: str = ""
+    warnings: List[str] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list)
+
+
 def suggest_tag(base_ref: str) -> str:
-    """根据基础镜像生成默认新镜像名，如 vllm-ascend:v0.23.0-a3 -> vllm-ascend-ucm:v0.23.0-a3"""
+    """根据基础镜像生成默认新镜像名，如 vllm-ascend:v0.23.0 -> vllm-ascend-ucm:v0.23.0"""
     base_ref = (base_ref or "").strip()
     if not base_ref:
         return "ucm-engine:latest"
@@ -83,49 +88,131 @@ def suggest_tag(base_ref: str) -> str:
     return f"{short}-ucm:{tag}"
 
 
+def image_platform(base_image: str) -> str:
+    """从镜像名推断平台：'ascend' / 'nvidia'；无法识别返回 ''。"""
+    ref = (base_image or "").lower()
+    if any(k in ref for k in ("ascend", "cann")):
+        return "ascend"
+    if any(k in ref for k in ("nvidia", "cuda")):
+        return "nvidia"
+    return ""
+
+
+def whl_arch(filename: str) -> str:
+    """从 whl 文件名解析 CPU 架构标记（x86_64 / aarch64）。
+
+    纯 Python 包（platform tag 为 any，如 py3-none-any）返回空串（跨平台）。
+    """
+    name = os.path.basename(filename or "")
+    if not name.lower().endswith(".whl"):
+        return ""
+    parts = name[:-4].split("-")
+    if len(parts) < 5:
+        return ""
+    tag = parts[-1].lower()
+    if tag.endswith("any"):
+        return ""
+    if "x86_64" in tag or "amd64" in tag:
+        return "x86_64"
+    if "aarch64" in tag or "arm64" in tag or "armv7" in tag:
+        return "aarch64"
+    return ""
+
+
+def fetch_server_arch(ssh: SSHClient) -> str:
+    """获取服务器 CPU 架构（uname -m）；仅返回 x86_64 / aarch64，失败返回 ''。"""
+    try:
+        res = ssh.exec("uname -m", timeout=15)
+    except SSHError:
+        return ""
+    if not res.ok:
+        return ""
+    arch = (res.stdout or "").strip().lower()
+    return arch if arch in ("x86_64", "aarch64") else ""
+
+
+def validate_build_match(device: Optional[DeviceInfo], server_arch: str,
+                         base_image: str, ucm_whl: str,
+                         wrapt_whl: str) -> MatchResult:
+    """校验「服务器设备 / 基础镜像 / UCM、wrapt 安装包」是否匹配。
+
+    - 设备已探测且卡数 > 0
+    - 镜像平台（按名称推断）与服务器设备类型一致（无法识别则警告）
+    - whl 文件名中的 CPU 架构标记与服务器架构（uname -m）一致（纯 py 包跳过）
+    """
+    errors: List[str] = []
+    warnings: List[str] = []
+
+    if device is None or device.device_type == DeviceType.UNKNOWN or device.count <= 0:
+        errors.append("服务器未探测到加速设备（请先在步骤1「探测设备」）")
+    else:
+        plat = image_platform(base_image)
+        if not plat:
+            warnings.append(
+                f"无法从镜像名 {base_image} 识别平台（ascend/nvidia），"
+                f"请自行确认镜像与服务器设备 {device.display} 匹配")
+        elif plat != device.device_type.value:
+            errors.append(
+                f"镜像 {base_image} 疑似 {plat} 平台镜像，与服务器设备 "
+                f"{device.device_type.value}（{device.display}）不匹配")
+
+    if server_arch:
+        for label, whl in (("UCM whl", ucm_whl), ("wrapt whl", wrapt_whl)):
+            if not whl:
+                continue
+            arch = whl_arch(whl)
+            if arch and arch != server_arch:
+                errors.append(
+                    f"{label} 架构不匹配：{os.path.basename(whl)} 为 {arch}，"
+                    f"服务器为 {server_arch}")
+    else:
+        warnings.append("未能获取服务器 CPU 架构（uname -m），已跳过 whl 架构校验")
+
+    if errors:
+        return MatchResult(False, "；".join(errors), warnings, errors)
+    detail = f"服务器 {device.display}" if device and device.count > 0 else "服务器"
+    if server_arch:
+        detail += f"（{server_arch}）"
+    return MatchResult(True, f"校验通过：{detail} 与镜像/安装包匹配", warnings)
+
+
 def generate_dockerfile(config: ImageBuildConfig, ucm_name: str,
-                        wrapt_name: str = "", toolkit_name: str = "") -> str:
-    """生成构建带 UCM 引擎镜像的 Dockerfile（纯函数，便于测试）。"""
-    offline_flags = "--no-index --find-links=/tmp/ucm-pkgs" if config.offline else ""
+                        wrapt_name: str, toolkit_name: str = "") -> str:
+    """生成构建带 UCM 引擎镜像的 Dockerfile（纯函数，便于测试）。
+
+    wrapt 为 UCM 的唯一外部依赖，与 UCM 一同本地离线安装（--no-index）。
+    """
+    offline_flags = "--no-index --find-links=/tmp/ucm-pkgs"
     lines = [
         "# 由 UCM Deployer 自动生成",
         f"FROM {config.base_image}",
         f"ENV PLATFORM={config.platform}",
         "WORKDIR /tmp/ucm-pkgs",
         f"COPY {ucm_name} /tmp/ucm-pkgs/",
+        f"COPY {wrapt_name} /tmp/ucm-pkgs/",
     ]
-    if config.offline and wrapt_name:
-        lines.append(f"COPY {wrapt_name} /tmp/ucm-pkgs/")
     if toolkit_name:
         lines.append(f"COPY {toolkit_name} /tmp/ucm-pkgs/")
     lines.append("")
-    if config.offline and wrapt_name:
-        lines.append("# 离线安装 UCM 依赖 wrapt（本地 whl）")
-        lines.append(f"RUN pip install --no-cache-dir {offline_flags} /tmp/ucm-pkgs/{wrapt_name}")
+    lines.append("# 离线安装 UCM 依赖 wrapt（本地 whl）")
+    lines.append(f"RUN pip install --no-cache-dir {offline_flags} /tmp/ucm-pkgs/{wrapt_name}")
     lines.append("# 安装 UCM")
-    run_ucm = " ".join(p for p in
-                       ["RUN pip install --no-cache-dir", offline_flags,
-                        f"/tmp/ucm-pkgs/{ucm_name}"] if p)
-    lines.append(run_ucm)
+    lines.append(f"RUN pip install --no-cache-dir {offline_flags} /tmp/ucm-pkgs/{ucm_name}")
     if toolkit_name:
         lines.append("")
         lines.append("# 源码安装 ucm-toolkit")
         lines.append(
-            "RUN mkdir -p /tmp/ucm-toolkit-src \\"
-        )
+            "RUN mkdir -p /tmp/ucm-toolkit-src \\")
         lines.append(
-            f"    && tar xzf /tmp/ucm-pkgs/{toolkit_name} -C /tmp/ucm-toolkit-src --strip-components=1 \\"
-        )
+            f"    && tar xzf /tmp/ucm-pkgs/{toolkit_name} -C /tmp/ucm-toolkit-src --strip-components=1 \\")
         lines.append(
-            "    && pip install --no-cache-dir /tmp/ucm-toolkit-src"
-        )
+            "    && pip install --no-cache-dir /tmp/ucm-toolkit-src")
     return "\n".join(lines) + "\n"
 
 
 def _pack_dir_tarball(dir_path: str) -> str:
     """把本地目录打包为 tar.gz（保留顶层目录名）。"""
     dir_path = os.path.abspath(dir_path)
-    parent = os.path.dirname(dir_path)
     name = os.path.basename(dir_path.rstrip("\\/"))
     fd, tar_path = tempfile.mkstemp(prefix="ucm-toolkit-", suffix=".tar.gz")
     os.close(fd)
@@ -180,17 +267,13 @@ class ImageBuilder:
         _check_cancel()
 
         try:
-            wrapt_name = ""
-            toolkit_name = ""
             toolkit_tar = None
             try:
                 ucm_name = _upload(config.ucm_whl_local, remote_dir, 5, 30, "UCM whl")
                 _check_cancel()
-                if config.offline and config.wrapt_whl_local:
-                    wrapt_name = _upload(config.wrapt_whl_local, remote_dir, 30, 40, "wrapt whl")
-                    _check_cancel()
-                elif config.offline and not config.wrapt_whl_local:
-                    log("[提示] 离线模式但未提供 wrapt whl，若基础镜像内已有 wrapt 仍可继续")
+                wrapt_name = _upload(config.wrapt_whl_local, remote_dir, 30, 40, "wrapt whl")
+                _check_cancel()
+                toolkit_name = ""
                 if config.toolkit_dir:
                     toolkit_tar = _pack_dir_tarball(config.toolkit_dir)
                     toolkit_name = _upload(toolkit_tar, remote_dir, 40, 55, "ucm-toolkit 源码包")
@@ -215,7 +298,8 @@ class ImageBuilder:
                 log(f"UCM 检查: {ucm}")
                 if not ucm.installed:
                     raise ImageBuildError(
-                        f"镜像 {config.image_tag} 构建成功但未检测到 UCM 安装，请检查 whl 文件")
+                        f"镜像 {config.image_tag} 构建成功但未检测到 UCM 安装，"
+                        "请检查 whl 文件")
                 progress(100, f"构建完成: {config.image_tag}")
                 return BuildResult(ok=True, image=config.image_tag, ucm=ucm)
             finally:
@@ -227,7 +311,6 @@ class ImageBuilder:
         except (SSHError, DockerError) as exc:
             raise ImageBuildError(str(exc)) from exc
         finally:
-            # 清理远端构建目录（尽力而为）
             try:
                 self.ssh.exec(f"rm -rf {shq(remote_dir)}", timeout=60)
             except Exception:
@@ -248,7 +331,8 @@ def upload_image_tar(ssh: SSHClient, docker: DockerManager, local_tar: str,
     log(f"上传镜像包: {name} ({size / 1e6:.1f} MB)")
 
     def cb(sent: int, total: int) -> None:
-        progress(int(70 * sent / max(total, 1)), f"上传镜像包 {sent / 1e6:.1f}/{total / 1e6:.1f} MB")
+        progress(int(70 * sent / max(total, 1)),
+                 f"上传镜像包 {sent / 1e6:.1f}/{total / 1e6:.1f} MB")
 
     ssh.upload_file(local_tar, remote, progress_cb=cb)
     progress(75, "docker load ...")
@@ -256,124 +340,3 @@ def upload_image_tar(ssh: SSHClient, docker: DockerManager, local_tar: str,
     refs = docker.load_image(remote, on_line=lambda l: log(l))
     progress(100, "docker load 完成")
     return refs
-
-
-# ============================================================ 镜像分发
-def export_image_to_local(ssh: SSHClient, docker: DockerManager, image_ref: str,
-                          progress: Optional[ProgressFn] = None,
-                          log: Optional[LogFn] = None,
-                          cancelled: Optional[CancelledFn] = None) -> Tuple[str, int]:
-    """把服务器上的镜像 docker save 导出并下载到本地临时 tar（分发中转）。
-
-    返回 (本地 tar 路径, 字节数)。调用方负责在分发结束后删除本地临时文件。
-    """
-    progress = progress or (lambda pct, msg: None)
-    log = log or (lambda line: None)
-    ref = image_ref.strip()
-    if not ref:
-        raise ImageBuildError("未指定要分发的镜像")
-    if cancelled is not None and cancelled():
-        raise BuildCancelled("用户取消")
-    if not docker.image_exists(ref):
-        raise ImageBuildError(f"构建服务器上不存在镜像 {ref}，无法分发")
-
-    uid = uuid.uuid4().hex[:8]
-    repo, _, tag = ref.rpartition(":")
-    if not repo or "/" in tag:
-        repo, tag = ref, "latest"
-    remote_tar = f"/tmp/ucm-dist-{tag}-{uid}.tar"
-    progress(5, "docker save 导出镜像")
-    log(f"$ docker save -o {remote_tar} {ref}")
-    res = ssh.exec(f"docker save -o {shq(remote_tar)} {shq(ref)}", timeout=7200)
-    if not res.ok:
-        raise ImageBuildError(
-            f"docker save 失败(退出码 {res.exit_code}): "
-            f"{(res.stderr or res.stdout).strip()[:300]}")
-    try:
-        size = ssh.file_size(remote_tar)
-        log(f"已导出 {remote_tar} ({size / 1e9:.2f} GB)，经本机中转分发给其他服务器…")
-        fd, local_tar = tempfile.mkstemp(prefix="ucm-dist-", suffix=".tar")
-        os.close(fd)
-        progress(10, "下载镜像包到本机（中转）")
-
-        def cb(got: int, total: int) -> None:
-            pct = int(10 + 85 * got / max(total, 1))
-            progress(pct, f"下载镜像包 {got / 1e9:.2f}/{total / 1e9:.2f} GB")
-
-        try:
-            ssh.download_file(remote_tar, local_tar, progress_cb=cb)
-        except Exception:
-            try:
-                os.unlink(local_tar)
-            except OSError:
-                pass
-            raise
-        progress(98, "下载完成")
-        return local_tar, size
-    finally:
-        # 清理远端导出包（尽力而为）
-        try:
-            ssh.exec(f"rm -f {shq(remote_tar)}", timeout=60)
-        except Exception:
-            logger.debug("清理远端导出包失败 %s", remote_tar, exc_info=True)
-
-
-def import_image(ssh: SSHClient, docker: DockerManager, local_tar: str,
-                 image_ref: str,
-                 progress: Optional[ProgressFn] = None,
-                 log: Optional[LogFn] = None,
-                 cancelled: Optional[CancelledFn] = None) -> str:
-    """把本地镜像 tar 上传到服务器并 docker load（服务器已有该镜像则跳过）。
-
-    返回结果描述（用于分发汇总）；加载结果与预期不符时抛出带原因的错误。
-    """
-    progress = progress or (lambda pct, msg: None)
-    log = log or (lambda line: None)
-    ref = image_ref.strip()
-    if not os.path.isfile(local_tar):
-        raise ImageBuildError(f"本地镜像包不存在: {local_tar}")
-    if cancelled is not None and cancelled():
-        raise BuildCancelled("用户取消")
-
-    if docker.image_exists(ref):
-        msg = f"服务器已存在镜像 {ref}，跳过分发"
-        log(msg)
-        progress(100, "已存在，跳过")
-        return msg
-
-    name = os.path.basename(local_tar)
-    remote = f"/tmp/{name}"
-    size = os.path.getsize(local_tar)
-    log(f"上传镜像包 {name} ({size / 1e9:.2f} GB)")
-
-    def cb(sent: int, total: int) -> None:
-        pct = int(5 + 70 * sent / max(total, 1))
-        progress(pct, f"上传镜像包 {sent / 1e9:.2f}/{total / 1e9:.2f} GB")
-
-    progress(5, "上传镜像包")
-    ssh.upload_file(local_tar, remote, progress_cb=cb)
-    try:
-        if cancelled is not None and cancelled():
-            raise BuildCancelled("用户取消")
-        progress(78, "docker load ...")
-        log(f"$ docker load -i {remote}")
-        refs = docker.load_image(remote, on_line=lambda l: log(l))
-        if ref not in refs:
-            raise ImageBuildError(
-                f"docker load 结果异常: 期望 {ref}，实际加载 {refs or '无'}")
-        progress(92, "校验镜像")
-        if not docker.image_exists(ref):
-            raise ImageBuildError(f"docker load 后未在服务器上找到镜像 {ref}")
-        try:
-            ucm = docker.image_ucm_info(ref)
-            log(f"UCM 检查: {ucm}")
-        except Exception as exc:
-            log(f"[警告] UCM 检查失败（不影响分发）: {exc}")
-        progress(100, f"分发完成: {ref}")
-        return f"已加载镜像 {ref} ({size / 1e9:.2f} GB)"
-    finally:
-        # 清理远端镜像包（尽力而为）
-        try:
-            ssh.exec(f"rm -f {shq(remote)}", timeout=60)
-        except Exception:
-            logger.debug("清理远端镜像包失败 %s", remote, exc_info=True)

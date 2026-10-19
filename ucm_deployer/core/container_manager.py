@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
-"""容器创建：自动适配 Ascend/NVIDIA 的 docker run 命令生成与执行、
-kvcache 挂载目录的共享文件系统校验、宿主机目录浏览。"""
+"""容器创建：Ascend/NVIDIA 的 docker run 命令生成与执行、
+kvcache 挂载目录文件系统校验、宿主机目录浏览。"""
 from __future__ import annotations
 
 import re
-from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -38,14 +37,11 @@ class ContainerCreateConfig:
     device_type: DeviceType = DeviceType.UNKNOWN
     device_count: int = 0
     shm_size: str = "512g"
-    network: str = "host"
-    # kvcache 持久化目录（宿主机路径，挂载到容器相同路径）
+    network: str = "host"                 # Ascend 使用（--net=host）
+    ports: List[str] = field(default_factory=lambda: ["8000:8000"])  # NVIDIA 使用（-p）
     kv_cache_dirs: List[str] = field(default_factory=list)
-    # 模型路径（建议只读）
     model_mount: Optional[VolumeMount] = None
-    # 其他挂载
     extra_mounts: List[VolumeMount] = field(default_factory=list)
-    # 用户附加的 docker run 参数（每行一个）
     extra_args: str = ""
 
     def validate(self) -> None:
@@ -60,7 +56,6 @@ class ContainerCreateConfig:
 
 @dataclass
 class FsEntry:
-    server: str
     path: str
     source: str = ""
     fstype: str = ""
@@ -80,6 +75,7 @@ def _is_network_fs(entry: FsEntry) -> bool:
 
 
 def evaluate_shared_fs(entries: List[FsEntry]) -> SharedFsReport:
+    """评估 kvcache 挂载目录的文件系统（单服务器）。"""
     report = SharedFsReport(entries=entries)
     if not entries:
         report.ok = False
@@ -89,49 +85,16 @@ def evaluate_shared_fs(entries: List[FsEntry]) -> SharedFsReport:
     errors = [e for e in entries if e.error]
     if errors:
         report.ok = False
-        report.message = "；".join(f"{e.server}:{e.path} {e.error}" for e in errors)
+        report.message = "；".join(f"{e.path} {e.error}" for e in errors)
         return report
 
-    by_server: Dict[str, List[FsEntry]] = defaultdict(list)
-    for e in entries:
-        by_server[e.server].append(e)
-
-    # 1) 同一服务器上的多个目录必须在同一文件系统
-    for server, ents in by_server.items():
-        sources = {e.source for e in ents}
-        if len(sources) > 1:
-            report.ok = False
-            report.message = (
-                f"服务器 {server} 上的 kvcache 目录不在同一文件系统: "
-                + ", ".join(f"{e.path}({e.source})" for e in ents))
-            return report
-
-    # 2) 多服务器：同一目录在各服务器的存储源必须一致，且必须是网络共享文件系统
-    by_path: Dict[str, List[FsEntry]] = defaultdict(list)
-    for e in entries:
-        by_path[e.path].append(e)
-    if len(by_server) > 1:
-        for path, ents in by_path.items():
-            sources = {e.source for e in ents}
-            if len(sources) > 1:
-                report.ok = False
-                report.message = (
-                    f"目录 {path} 在不同服务器上不是同一存储源("
-                    + ", ".join(f"{e.server}->{e.source}" for e in ents) + ")")
-                return report
-        if not all(_is_network_fs(e) for e in entries):
-            report.ok = False
-            report.message = (
-                "多服务器部署要求 kvcache 目录位于共享文件系统(NFS/3FS/Lustre等)，"
-                "当前存在本地磁盘目录: " + ", ".join(e.path for e in entries if not _is_network_fs(e)))
-            return report
-        sample = entries[0]
-        report.ok = True
-        report.message = (f"校验通过：{len(by_path)} 个目录在 {len(by_server)} 台服务器上"
-                          f"均为共享文件系统({sample.source}, {sample.fstype})")
+    sources = {e.source for e in entries}
+    if len(sources) > 1:
+        report.ok = False
+        report.message = ("kvcache 目录不在同一文件系统: "
+                          + ", ".join(f"{e.path}({e.source})" for e in entries))
         return report
 
-    # 3) 单服务器
     sample = entries[0]
     if _is_network_fs(sample):
         report.ok = True
@@ -140,24 +103,23 @@ def evaluate_shared_fs(entries: List[FsEntry]) -> SharedFsReport:
         report.ok = True
         report.message = f"目录位于本地文件系统({sample.source}, {sample.fstype})"
         report.warnings.append(
-            "当前为本地磁盘；如后续多机部署需共用 kvcache，请改用共享文件系统(NFS/3FS等)")
+            "当前为本地磁盘；如后续需共用 kvcache，建议改用共享文件系统(NFS/3FS等)")
     return report
 
 
-def check_shared_fs(ssh_by_server: Dict[str, SSHClient], dirs: List[str]) -> SharedFsReport:
-    """校验 kvcache 挂载目录的共享文件系统一致性（可跨多台服务器）。"""
+def check_shared_fs(ssh: SSHClient, dirs: List[str]) -> SharedFsReport:
+    """df 校验 kvcache 挂载目录所在文件系统。"""
     entries: List[FsEntry] = []
-    for server, ssh in ssh_by_server.items():
-        for d in dirs:
-            res = ssh.exec(f"df --output=source,fstype {shq(d)} 2>/dev/null", timeout=30)
-            lines = [l for l in res.stdout.strip().splitlines() if l.strip()]
-            if not res.ok or len(lines) < 2:
-                entries.append(FsEntry(server, d, error="目录不存在或无法读取"))
-                continue
-            parts = lines[-1].split()
-            entries.append(FsEntry(server, d,
-                                   source=parts[0] if parts else "",
-                                   fstype=parts[1] if len(parts) > 1 else ""))
+    for d in dirs:
+        res = ssh.exec(f"df --output=source,fstype {shq(d)} 2>/dev/null", timeout=30)
+        lines = [l for l in res.stdout.strip().splitlines() if l.strip()]
+        if not res.ok or len(lines) < 2:
+            entries.append(FsEntry(d, error="目录不存在或无法读取"))
+            continue
+        parts = lines[-1].split()
+        entries.append(FsEntry(d,
+                               source=parts[0] if parts else "",
+                               fstype=parts[1] if len(parts) > 1 else ""))
     return evaluate_shared_fs(entries)
 
 
@@ -166,29 +128,19 @@ class ContainerManager:
         self.ssh = ssh
         self.docker = docker or DockerManager(ssh)
 
-    # ------------------------------------------------------------ 设备
-    def detect_ascend_device_count(self) -> int:
-        res = self.ssh.exec("ls -1 /dev/ 2>/dev/null | grep -cE '^davinci[0-9]+$'",
-                            timeout=30)
-        if res.ok:
-            try:
-                return int(res.stdout.strip())
-            except ValueError:
-                pass
-        return 0
-
     # ------------------------------------------------------------ 命令生成
     @staticmethod
     def generate_run_command(cfg: ContainerCreateConfig) -> str:
         cfg.validate()
         lines = ["docker run -itd"]
         lines.append(f"    --name {shq(cfg.name)}")
-        if cfg.network:
-            lines.append(f"    --net={cfg.network}")
-        if cfg.shm_size:
-            lines.append(f"    --shm-size {cfg.shm_size}")
 
         if cfg.device_type == DeviceType.ASCEND:
+            # Ascend: --net=host + 全部 davinci 设备 + 驱动/工具挂载
+            if cfg.network:
+                lines.append(f"    --net={cfg.network}")
+            if cfg.shm_size:
+                lines.append(f"    --shm-size {cfg.shm_size}")
             for i in range(cfg.device_count):
                 lines.append(f"    --device /dev/davinci{i}")
             lines.append("    --device /dev/davinci_manager")
@@ -197,8 +149,21 @@ class ContainerManager:
             for host, cont in ASCEND_SYSTEM_MOUNTS:
                 lines.append(f"    -v {shq(host)}:{shq(cont)}")
         elif cfg.device_type == DeviceType.NVIDIA:
+            # NVIDIA: --runtime nvidia --gpus all + 端口映射 + --ipc=host
+            lines.append("    --runtime nvidia")
             lines.append("    --gpus all")
+            for p in cfg.ports:
+                if p.strip():
+                    lines.append(f"    -p {p.strip()}")
             lines.append("    --ipc=host")
+            if cfg.shm_size:
+                lines.append(f"    --shm-size {cfg.shm_size}")
+        else:
+            # 设备未知：保守输出通用参数
+            if cfg.network:
+                lines.append(f"    --net={cfg.network}")
+            if cfg.shm_size:
+                lines.append(f"    --shm-size {cfg.shm_size}")
 
         for d in cfg.kv_cache_dirs:
             d = d.rstrip("/") or "/"
@@ -221,9 +186,9 @@ class ContainerManager:
         flat = flatten_command(command)
         return self.docker.run(flat, on_line=on_line)
 
-    # ------------------------------------------------------------ 浏览/校验
+    # ------------------------------------------------------------ 浏览
     def list_host_dirs(self, path: str = "/") -> List[str]:
-        """列出宿主机某目录下的子目录（GUI 下拉框数据源）。"""
+        """列出宿主机某目录下的子目录（GUI 目录浏览数据源）。"""
         path = path.rstrip("/") or "/"
         res = self.ssh.exec(
             f"find {shq(path)} -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort | head -200",
