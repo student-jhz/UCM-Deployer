@@ -53,6 +53,23 @@ def test_ucm_info_from_pip_show():
     assert str(empty) == "未安装"
 
 
+def test_ucm_info_from_freeze_output():
+    """pip list --format=freeze 输出解析（含平台变体包名）。"""
+    ucm = UCMInfo.from_freeze_output("uc-manager==0.2.1\n")
+    assert ucm.installed and ucm.version == "0.2.1"
+
+    variant = UCMInfo.from_freeze_output(
+        "uc-manager-cann910-a2==0.8.0.dev20261015\n")
+    assert variant.installed
+    assert variant.version == "0.8.0.dev20261015"
+    assert variant.package == "uc-manager-cann910-a2"
+    assert "uc-manager-cann910-a2" in str(variant)
+
+    # 其他包不误报
+    assert not UCMInfo.from_freeze_output("numpy==1.26.0\n").installed
+    assert not UCMInfo.from_freeze_output("").installed
+
+
 def test_volume_mount_docker_arg():
     m = VolumeMount("/data/models", "/models", readonly=True)
     assert m.to_docker_arg() == "-v /data/models:/models:ro"

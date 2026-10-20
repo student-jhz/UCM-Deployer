@@ -64,10 +64,29 @@ def test_build_streams_and_raises_on_error(fake_ssh):
 
 def test_image_ucm_info(fake_ssh):
     dm, ssh = make_dm(fake_ssh)
-    ssh._client.add(r"^docker run --rm", stdout="Name: uc-manager\nVersion: 0.2.1\n")
+    ssh._client.add(r"^docker run --rm", stdout="uc-manager==0.2.1\n")
     ucm = dm.image_ucm_info("img:1")
     assert isinstance(ucm, UCMInfo)
     assert ucm.installed and ucm.version == "0.2.1"
+
+
+def test_image_ucm_info_platform_variant(fake_ssh):
+    """UCM 包名平台变体（如 uc-manager-cann910-a2）也应识别。"""
+    dm, ssh = make_dm(fake_ssh)
+    ssh._client.add(r"^docker run --rm",
+                    stdout="uc-manager-cann910-a2==0.8.0.dev20261015\n")
+    ucm = dm.image_ucm_info("img:1")
+    assert ucm.installed
+    assert ucm.version == "0.8.0.dev20261015"
+    assert ucm.package == "uc-manager-cann910-a2"
+    assert "uc-manager-cann910-a2" in str(ucm)
+
+
+def test_image_ucm_info_not_installed(fake_ssh):
+    dm, ssh = make_dm(fake_ssh)
+    ssh._client.add(r"^docker run --rm", stdout="", exit_code=1)
+    ucm = dm.image_ucm_info("img:1")
+    assert not ucm.installed
 
 
 def test_container_ucm_info_requires_running(fake_ssh):
@@ -80,7 +99,7 @@ def test_container_ucm_info_requires_running(fake_ssh):
 def test_container_ucm_info(fake_ssh):
     dm, ssh = make_dm(fake_ssh)
     ssh._client.add(r"docker inspect -f", stdout="true\n")
-    ssh._client.add(r"^docker exec c1", stdout="Name: uc-manager\nVersion: 0.2.1\n")
+    ssh._client.add(r"^docker exec c1", stdout="uc-manager==0.2.1\n")
     ucm = dm.container_ucm_info("c1")
     assert ucm.installed
 

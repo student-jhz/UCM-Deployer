@@ -73,14 +73,19 @@ class DockerManager:
         return res
 
     # ------------------------------------------------------------ UCM 检查
+    # ------------------------------------------------------------ UCM 检查
+    # UCM 包名存在平台变体（如 uc-manager-cann910-a2），用 pip list 宽泛匹配
+    _UCM_LIST_CMD = (
+        "pip list --format=freeze 2>/dev/null"
+        " | grep -iE '^uc[-_.]?manager' | head -3"
+    )
+
     def image_ucm_info(self, image_ref: str) -> UCMInfo:
-        """检查镜像内是否安装 UCM（pip show uc-manager）。"""
+        """检查镜像内是否安装 UCM（pip list 匹配 uc-manager* 及平台变体）。"""
         cmd = (f"docker run --rm --entrypoint /bin/sh {shq(image_ref)} -c "
-               f"{shq('pip show uc-manager 2>/dev/null || pip show ucm 2>/dev/null')}")
+               f"{shq(self._UCM_LIST_CMD)}")
         res = self.ssh.exec(cmd, timeout=300)
-        if not res.ok and not res.stdout.strip():
-            return UCMInfo()
-        return UCMInfo.from_pip_show(res.stdout + "\n" + res.stderr)
+        return UCMInfo.from_freeze_output(res.stdout + "\n" + res.stderr)
 
     def container_ucm_info(self, container: str) -> UCMInfo:
         """检查运行中容器内是否安装 UCM。"""
@@ -89,11 +94,9 @@ class DockerManager:
         if not res.ok or res.stdout.strip() != "true":
             raise DockerError(f"容器 {container} 不存在或未运行")
         cmd = (f"docker exec {shq(container)} /bin/bash -c "
-               f"{shq('pip show uc-manager 2>/dev/null || pip show ucm 2>/dev/null')}")
+               f"{shq(self._UCM_LIST_CMD)}")
         res = self.ssh.exec(cmd, timeout=120)
-        if not res.ok and not res.stdout.strip():
-            return UCMInfo()
-        return UCMInfo.from_pip_show(res.stdout + "\n" + res.stderr)
+        return UCMInfo.from_freeze_output(res.stdout + "\n" + res.stderr)
 
     # ------------------------------------------------------------ 容器
     def run(self, command: str,

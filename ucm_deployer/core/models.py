@@ -2,6 +2,7 @@
 """核心数据模型（纯 dataclass，不依赖 SSH/GUI，便于序列化与单元测试）。"""
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -195,30 +196,54 @@ class DockerImage:
 
 @dataclass
 class UCMInfo:
-    """UCM 包安装状态（pip show 解析结果）。"""
+    """UCM 包安装状态（pip 输出解析结果）。
+
+    UCM 包名存在平台变体（uc-manager、uc-manager-cann910-a2 等），
+    统一按 uc[-_.]?manager 前缀宽泛匹配。
+    """
 
     installed: bool = False
     version: str = ""
     location: str = ""
+    package: str = ""       # 实际包名（如 uc-manager-cann910-a2）
+
+    _NAME_RE = re.compile(r"(?i)^uc[-_.]?manager")
 
     @classmethod
     def from_pip_show(cls, text: str) -> "UCMInfo":
         version = ""
         location = ""
+        package = ""
         for line in (text or "").splitlines():
             key, _, value = line.partition(":")
             key = key.strip().lower()
-            if key == "version":
+            if key == "name":
+                package = value.strip()
+            elif key == "version":
                 version = value.strip()
             elif key == "location":
                 location = value.strip()
-        installed = bool(version) and ("uc-manager" in text or "ucm" in text.lower())
-        return cls(installed=installed, version=version, location=location)
+        installed = bool(version) and bool(package) and bool(cls._NAME_RE.match(package))
+        return cls(installed=installed, version=version,
+                   location=location, package=package)
+
+    @classmethod
+    def from_freeze_output(cls, text: str) -> "UCMInfo":
+        """解析 `pip list --format=freeze` 过滤输出（name==version 每行一个）。"""
+        for line in (text or "").splitlines():
+            name, sep, version = line.partition("==")
+            if not sep:
+                continue
+            name = name.strip()
+            if cls._NAME_RE.match(name):
+                return cls(installed=True, version=version.strip(), package=name)
+        return cls()
 
     def __str__(self) -> str:
         if self.installed:
             loc = f" @ {self.location}" if self.location else ""
-            return f"已安装 {self.version}{loc}"
+            pkg = self.package or "uc-manager"
+            return f"已安装 {pkg} {self.version}{loc}"
         return "未安装"
 
 

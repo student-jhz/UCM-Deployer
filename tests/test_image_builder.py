@@ -187,8 +187,8 @@ def test_build_full_flow(fake_ssh, tmp_path):
 
     ssh._client.add(r"^mkdir -p .* && test -d", stdout="")
     ssh._client.add(r"^docker build -t ", stdout="Step 1/4\nSuccessfully built abc123\n")
-    ssh._client.add(r"docker run --rm --entrypoint /bin/sh .+ -c .+pip show",
-                    stdout="Name: uc-manager\nVersion: 0.2.1\nLocation: /usr/lib\n")
+    ssh._client.add(r"docker run --rm --entrypoint /bin/sh .+ -c .+pip list",
+                    stdout="uc-manager==0.2.1\n")
     ssh._client.add(r"^rm -rf ", stdout="")
 
     logs = []
