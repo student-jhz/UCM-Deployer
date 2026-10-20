@@ -106,13 +106,15 @@ def test_run_env_only(fake_ssh):
 
 
 def test_run_with_mount_creates_and_cleans_subdir(fake_ssh):
-    """指定挂载目录：在其下创建临时子目录执行带宽测试并清理。"""
+    """指定挂载目录：在其下创建临时子目录执行带宽测试并清理（播报路径）。"""
     ssh = make_ssh(fake_ssh)
     ssh._client.add(r"mkdir -p ", stdout="")                       # 建子目录
     ssh._client.add(r"ucm-toolkit run precheck",
                     stdout="[PASS] kernel  5.10.0\n[WARN] bandwidth  7.0\n")
     ssh._client.add(r"rm -rf ", stdout="")                         # 清子目录
-    result = PrecheckRunner(ssh).run("ucm-ctr", mount_path="/mnt/kvcache")
+    lines = []
+    result = PrecheckRunner(ssh).run("ucm-ctr", mount_path="/mnt/kvcache",
+                                     on_line=lines.append)
     assert result.ok
     assert result.warn_count == 1
 
@@ -125,6 +127,21 @@ def test_run_with_mount_creates_and_cleans_subdir(fake_ssh):
     rm = next(c for c in cmds if "rm -rf" in c)
     # 清理的正是创建的同一个子目录
     assert m.group(1) in rm and mkdir.split()[-1].strip("'\"") in rm
+    # 运行时播报临时目录路径与清理结果（便于用户在环境上核对）
+    assert any("[deployer] 带宽测试临时目录" in l and "ucm-precheck-" in l
+               for l in lines)
+    assert any("[deployer] 已清理临时目录" in l and "ucm-precheck-" in l
+               for l in lines)
+
+
+def test_run_no_mount_no_notify_lines(fake_ssh):
+    """无挂载目录（仅环境检查）：无临时目录播报。"""
+    ssh = make_ssh(fake_ssh)
+    ssh._client.add(r"ucm-toolkit run precheck", stdout="[PASS] kernel  5.10.0\n")
+    lines = []
+    PrecheckRunner(ssh).run("ucm-ctr", mount_path="",
+                            skip_bandwidth=True, on_line=lines.append)
+    assert not any("[deployer]" in l for l in lines)
 
 
 def test_run_cleans_subdir_even_on_failure(fake_ssh):

@@ -12,6 +12,7 @@ from typing import List
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QGroupBox,
     QHBoxLayout,
@@ -50,17 +51,26 @@ class PrecheckPage(QWidget):
         cfg_box = QGroupBox("1. 预检参数")
         self.container_label = QLabel("目标容器：未创建（请先在步骤3创建容器）")
         self.container_label.setProperty("role", "hint")
+
+        self.bandwidth_check = QCheckBox("执行存储带宽检查（默认开启）")
+        self.bandwidth_check.setChecked(True)
+        self.bandwidth_check.setToolTip(
+            "开启：在指定挂载目录下创建临时子目录 ucm-precheck-* 执行读写负载，\n"
+            "预检结束后自动清理（运行日志会播报该临时目录路径，便于核对）；\n"
+            "关闭：仅环境检查（驱动/内核/共享内存/AIO），无需填挂载目录。")
+        self.bandwidth_check.toggled.connect(self._on_bandwidth_toggled)
+
         self.mount_edit = QLineEdit()
-        self.mount_edit.setPlaceholderText("留空 = 仅环境检查（跳过带宽测试）")
+        self.mount_edit.setPlaceholderText("KV Cache 挂载目录（带宽测试在其下创建临时子目录）")
         self.mount_edit.setToolTip(
             "KV Cache 挂载目录（容器内路径 = 宿主机路径）。\n"
-            "指定后将在该目录下创建临时子目录 ucm-precheck-* 执行读写负载，\n"
+            "带宽检查将在该目录下创建临时子目录 ucm-precheck-* 执行读写负载，\n"
             "预检结束后自动清理子目录；请确保目录有可用空间。")
         mount_btn = QPushButton("浏览...")
         mount_btn.clicked.connect(self._browse_mount)
         self.mount_hint = QLabel(
-            "指定挂载目录时执行存储带宽测试（在其下创建临时子目录，结束后自动清理）；"
-            "留空则仅检查环境（驱动/内核/共享内存/AIO）。")
+            "带宽检查：在挂载目录下创建临时子目录（运行日志播报路径），结束后自动清理；"
+            "关闭带宽检查则仅检查环境（驱动/内核/共享内存/AIO）。")
         self.mount_hint.setProperty("role", "hint")
         self.mount_hint.setWordWrap(True)
 
@@ -71,6 +81,7 @@ class PrecheckPage(QWidget):
         cfg_layout = QVBoxLayout(cfg_box)
         cfg_layout.setSpacing(4)
         cfg_layout.addWidget(self.container_label)
+        cfg_layout.addWidget(self.bandwidth_check)
         mount_row = QHBoxLayout()
         mount_row.addWidget(QLabel("挂载目录"), 0)
         mount_row.addWidget(self.mount_edit, 1)
@@ -111,6 +122,14 @@ class PrecheckPage(QWidget):
     # ------------------------------------------------------------ 辅助
     def on_enter(self) -> None:
         self._refresh_container_label()
+        self._on_bandwidth_toggled()
+
+    def _on_bandwidth_toggled(self, *_) -> None:
+        """带宽检查开关：关闭时挂载目录不可用（免填）。"""
+        on = self.bandwidth_check.isChecked()
+        self.mount_edit.setEnabled(on)
+        if not on:
+            self.mount_edit.clear()
 
     def _refresh_container_label(self) -> None:
         server = self.ctx.server
@@ -150,14 +169,21 @@ class PrecheckPage(QWidget):
             QMessageBox.information(
                 self, "提示", "请先在步骤3创建容器，再执行环境预检。")
             return
-        mount_path = self.mount_edit.text().strip()
+        bandwidth = self.bandwidth_check.isChecked()
+        mount_path = self.mount_edit.text().strip() if bandwidth else ""
+        if bandwidth and not mount_path:
+            QMessageBox.warning(
+                self, "参数错误",
+                "已开启带宽检查，请填写挂载目录（或关闭带宽检查仅做环境检查）。")
+            return
         if mount_path and not mount_path.startswith("/"):
             QMessageBox.warning(self, "参数错误", "挂载目录必须是以 / 开头的绝对路径")
             return
 
-        self.summary_label.setText("预检运行中...（结果见下方表格，过程日志见底部页签）")
+        mode = ("带宽检查（临时子目录自动清理，路径见日志）" if bandwidth
+                else "仅环境检查（--skip-bandwidth）")
+        self.summary_label.setText(f"预检运行中...（{mode}；过程日志见底部页签）")
         self.result_table.setRowCount(0)
-
         holder = {}
 
         def fn(ssh, tctx):
@@ -165,6 +191,7 @@ class PrecheckPage(QWidget):
             runner = PrecheckRunner(ssh)
             result = runner.run(
                 container, mount_path=mount_path,
+                skip_bandwidth=not bandwidth,
                 on_line=lambda line: tctx.log(line))
             for item in result.items:
                 detail = (item.summary + ("\n" + item.detail if item.detail else "")

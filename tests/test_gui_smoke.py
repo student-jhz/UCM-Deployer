@@ -627,7 +627,7 @@ Result: FAILED  |  1 pass, 1 warn, 1 fail, 1 skip, 1 info
 
 
 def test_precheck_page_intercepts_and_labels(qapp, tmp_path):
-    """步骤4：未登录/未建容器时拦截；容器名回显。"""
+    """步骤4：未登录/未建容器时拦截；容器名回显；带宽开关控制挂载目录。"""
     from ucm_deployer.core.models import ServerInfo
     from ucm_deployer.core.server_registry import ServerRegistry
     from ucm_deployer.gui.state import AppContext
@@ -637,6 +637,10 @@ def test_precheck_page_intercepts_and_labels(qapp, tmp_path):
     page = PrecheckPage(ctx)
     page.on_enter()
     assert "未登录" in page.container_label.text()
+
+    # 带宽检查默认开启，挂载目录可用
+    assert page.bandwidth_check.isChecked()
+    assert page.mount_edit.isEnabled()
 
     s = ServerInfo.create(name="n1", host="127.0.0.1")
     ctx.selected = [s]
@@ -649,14 +653,25 @@ def test_precheck_page_intercepts_and_labels(qapp, tmp_path):
     ctx.containers = {s.id: "ucm-vllm"}
     page.on_enter()
     assert "ucm-vllm" in page.container_label.text()
+    # 带宽开启但未填挂载目录 -> 拦截
+    page._run()
+    qapp.processEvents()
+    assert page.result_table.rowCount() == 0
+    # 挂载目录非绝对路径 -> 拦截
     page.mount_edit.setText("relative/path")
-    page._run()      # 非绝对路径 -> 提示后返回
+    page._run()
     qapp.processEvents()
     assert page.result_table.rowCount() == 0
 
+    # 关闭带宽检查：挂载目录禁用并清空，不校验目录
+    page.bandwidth_check.setChecked(False)
+    qapp.processEvents()
+    assert not page.mount_edit.isEnabled()
+    assert page.mount_edit.text() == ""
+
 
 def test_precheck_page_runs_and_shows_result(qapp, tmp_path, fake_ssh):
-    """步骤4：预检执行 + 结果表格逐项展示（含状态着色）。"""
+    """步骤4：预检执行 + 结果表格逐项展示（含状态着色）+ 临时目录播报。"""
     from ucm_deployer.core.models import ServerInfo
     from ucm_deployer.core.server_registry import ServerRegistry
     from ucm_deployer.gui.state import AppContext
@@ -697,3 +712,36 @@ def test_precheck_page_runs_and_shows_result(qapp, tmp_path, fake_ssh):
     assert "ucm-precheck-" in precheck_cmd
     rm_cmd = next(c for c in cmds if "rm -rf" in c)
     assert "ucm-precheck-" in rm_cmd
+    # 日志播报临时目录路径与清理结果
+    log_text = page.panel._logs[s.id].toPlainText()
+    assert "带宽测试临时目录" in log_text and "ucm-precheck-" in log_text
+    assert "已清理临时目录" in log_text
+
+
+def test_precheck_page_bandwidth_disabled_env_only(qapp, tmp_path, fake_ssh):
+    """步骤4：关闭带宽检查时无需挂载目录，命令带 --skip-bandwidth。"""
+    from ucm_deployer.core.models import ServerInfo
+    from ucm_deployer.core.server_registry import ServerRegistry
+    from ucm_deployer.gui.state import AppContext
+    from ucm_deployer.gui.widgets.precheck_page import PrecheckPage
+
+    fake_ssh.add_default(r"ucm-toolkit run precheck",
+                         stdout=_PRECHECK_SAMPLE, exit_code=1)
+
+    ctx = AppContext(ServerRegistry(tmp_path))
+    s = ServerInfo.create(name="n1", host="127.0.0.1")
+    ctx.selected = [s]
+    ctx.containers = {s.id: "ucm-vllm"}
+    page = PrecheckPage(ctx)
+    page.on_enter()
+    page.bandwidth_check.setChecked(False)
+    qapp.processEvents()
+    page._run()
+    assert _wait_panel(page.panel, qapp), "预检任务超时"
+
+    cmds = [c.executed_command for inst in fake_ssh.instances
+            for c in inst.channels]
+    precheck_cmd = next(c for c in cmds if "ucm-toolkit run precheck" in c)
+    assert "--skip-bandwidth" in precheck_cmd
+    assert "--mount-path" not in precheck_cmd
+    assert not any("mkdir -p" in c for c in cmds)

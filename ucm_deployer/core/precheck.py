@@ -107,6 +107,8 @@ class PrecheckRunner:
 
         mount_path 非空时在其下创建临时子目录做带宽测试并自动清理；
         否则按 skip_bandwidth 决定是否跳过带宽检查（默认跳过）。
+        临时子目录的创建/清理会通过 on_line 播报（[deployer] 前缀），
+        便于用户在环境上核对目录是否存在/已被清除。
         """
         sub_dir = ""
         arg = ""
@@ -118,6 +120,9 @@ class PrecheckRunner:
                 raise PrecheckError(
                     f"创建预检临时目录失败 {sub_dir}: "
                     f"{(res.stderr or res.stdout).strip()[:200]}")
+            if on_line:
+                on_line(f"[deployer] 带宽测试临时目录: {sub_dir}（预检结束后自动清理，"
+                        "可在环境上核对）")
             arg = f"--mount-path {shq(sub_dir)}"
         elif skip_bandwidth:
             arg = "--skip-bandwidth"
@@ -128,12 +133,17 @@ class PrecheckRunner:
             res = self.ssh.exec_stream(cmd, on_line=on_line, timeout=timeout)
         finally:
             if sub_dir:
-                # 清理预检临时子目录（尽力而为，失败仅记日志）
+                # 清理预检临时子目录（尽力而为，失败提示用户手动清理）
                 try:
                     self._exec_in_container(container, f"rm -rf {shq(sub_dir)}")
                 except Exception:
                     logger.warning("清理预检临时目录失败: %s", sub_dir,
                                    exc_info=True)
+                    if on_line:
+                        on_line(f"[deployer] ⚠ 清理临时目录失败，请手动删除: {sub_dir}")
+                else:
+                    if on_line:
+                        on_line(f"[deployer] 已清理临时目录: {sub_dir}")
         if res.exit_code == 2:
             raise PrecheckError(
                 f"precheck 用法错误(退出码 2)：{res.stderr.strip()[:300]}")
