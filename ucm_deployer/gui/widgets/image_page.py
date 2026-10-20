@@ -2,7 +2,7 @@
 """步骤2：镜像构建 —— 在已登录服务器上构建带 UCM 的镜像。
 
 流程：选择基础镜像（docker images / 上传 tar）
-      -> 上传 wrapt whl、UCM whl、（可选）ucm-toolkit 源码包
+      -> 上传 wrapt whl、UCM whl、（可选）ucm-toolkit whl
       -> 校验服务器/镜像/安装包匹配 -> 填新镜像名 -> 构建并校验 UCM 安装。
 """
 from __future__ import annotations
@@ -90,7 +90,8 @@ class ImagePage(QWidget):
         toolkit_btn = QPushButton("浏览...")
         wrapt_btn.clicked.connect(lambda: self._pick_file(self.wrapt_whl_edit, "wrapt whl (*.whl)"))
         ucm_btn.clicked.connect(lambda: self._pick_file(self.ucm_whl_edit, "UCM whl (*.whl)"))
-        toolkit_btn.clicked.connect(lambda: self._pick_dir(self.toolkit_edit))
+        toolkit_btn.clicked.connect(
+            lambda: self._pick_file(self.toolkit_edit, "ucm-toolkit whl (*.whl)"))
 
         # 在线下载提示（本地没有包时指引获取途径，链接可点击直达浏览器）
         self.ucm_dl_hint = QLabel(
@@ -102,22 +103,31 @@ class ImagePage(QWidget):
             '从 PyPI (wrapt 1.17.2) 文件列表在线下载</a>'
             '（选择匹配服务器 Python 版本与 CPU 架构的 whl，'
             '如 manylinux 的 x86_64 / aarch64）')
-        for hint in (self.ucm_dl_hint, self.wrapt_dl_hint):
+        self.toolkit_dl_hint = QLabel(
+            '⬇ 本地没有 ucm-toolkit 包？<a href="https://github.com/ModelEngine-Group/'
+            'unified-cache-management/releases">从 GitHub Releases 在线下载</a>'
+            '（与 UCM 包同站点，pip install 安装）')
+        for hint in (self.ucm_dl_hint, self.wrapt_dl_hint, self.toolkit_dl_hint):
             hint.setProperty("role", "hint")
             hint.setOpenExternalLinks(True)
         self.ucm_dl_hint.setToolTip(
             "https://github.com/ModelEngine-Group/unified-cache-management/releases")
         self.wrapt_dl_hint.setToolTip("https://pypi.org/project/wrapt/1.17.2/#files")
+        self.toolkit_dl_hint.setToolTip(
+            "https://github.com/ModelEngine-Group/unified-cache-management/releases")
 
         # whl 选择即时反馈：文件有效性 + 架构标记解析（帮助确认与服务器匹配）
         self.wrapt_fb = QLabel("")
         self.ucm_fb = QLabel("")
-        for fb in (self.wrapt_fb, self.ucm_fb):
+        self.toolkit_fb = QLabel("")
+        for fb in (self.wrapt_fb, self.ucm_fb, self.toolkit_fb):
             fb.setProperty("role", "hint")
         self.wrapt_whl_edit.textChanged.connect(
             lambda t: self._update_whl_feedback(self.wrapt_fb, t))
         self.ucm_whl_edit.textChanged.connect(
             lambda t: self._update_whl_feedback(self.ucm_fb, t))
+        self.toolkit_edit.textChanged.connect(
+            lambda t: self._update_whl_feedback(self.toolkit_fb, t))
 
         form = QFormLayout(build_box)
         row_w = QHBoxLayout()
@@ -135,7 +145,9 @@ class ImagePage(QWidget):
         form.addRow("UCM whl 包*", row_u)
         form.addRow("", self.ucm_fb)
         form.addRow("", self.ucm_dl_hint)
-        form.addRow("ucm-toolkit 源码目录（可选）", row_t)
+        form.addRow("ucm-toolkit whl 包（可选）", row_t)
+        form.addRow("", self.toolkit_fb)
+        form.addRow("", self.toolkit_dl_hint)
 
         # ---------- 3. 新镜像名
         name_box = QGroupBox("3. 新镜像名")
@@ -242,16 +254,6 @@ class ImagePage(QWidget):
             edit.setText(path)
             settings.setValue("last_file_dir", os.path.dirname(path))
 
-    def _pick_dir(self, edit: QLineEdit) -> None:
-        from PySide6.QtCore import QSettings
-
-        settings = QSettings("UCM-Deployer", "paths")
-        start = str(settings.value("last_file_dir", ""))
-        path = QFileDialog.getExistingDirectory(self, "选择 ucm-toolkit 源码目录", start)
-        if path:
-            edit.setText(path)
-            settings.setValue("last_file_dir", path)
-
     # ------------------------------------------------------------ 后台快任务
     def _run_quick(self, fn, on_done) -> None:
         """后台快任务：保持引用防止运行中线程被回收，完成后自动清理。"""
@@ -279,6 +281,7 @@ class ImagePage(QWidget):
             if not dm.check_docker():
                 raise RuntimeError("docker 不可用")
             images = dm.list_images()
+            self._images = images
             tctx.log(f"共 {len(images)} 个镜像：")
             for im in images:
                 mark = " [疑似UCM]" if "ucm" in im.ref.lower() else ""
@@ -381,8 +384,8 @@ class ImagePage(QWidget):
             QMessageBox.warning(self, "参数错误", "请选择有效的 wrapt whl 文件")
             return None
         toolkit = self.toolkit_edit.text().strip()
-        if toolkit and not os.path.isdir(toolkit):
-            QMessageBox.warning(self, "参数错误", "ucm-toolkit 源码目录无效")
+        if toolkit and not os.path.isfile(toolkit):
+            QMessageBox.warning(self, "参数错误", "ucm-toolkit whl 文件路径无效")
             return None
         return server, base, ucm_whl, wrapt_whl, toolkit
 
@@ -434,7 +437,7 @@ class ImagePage(QWidget):
             cfg = ImageBuildConfig(
                 base_image=base, image_tag=tag,
                 ucm_whl_local=ucm_whl, wrapt_whl_local=wrapt_whl,
-                toolkit_dir=toolkit,
+                toolkit_whl_local=toolkit,
                 platform=platform)
 
             result = ImageBuilder(ssh, DockerManager(ssh)).build(

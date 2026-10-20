@@ -11,8 +11,10 @@ def fake_ssh(monkeypatch):
     monkeypatch.setattr(paramiko, "SSHClient", FakeSSHClient)
     FakeSSHClient.connect_exception = None
     FakeSSHClient.instances = []
+    FakeSSHClient.default_scripts = []
     yield FakeSSHClient
     FakeSSHClient.connect_exception = None
+    FakeSSHClient.default_scripts = []
 
 
 @pytest.hookimpl(hookwrapper=True)

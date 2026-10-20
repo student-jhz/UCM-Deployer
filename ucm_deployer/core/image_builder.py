@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import os
 import re
-import tarfile
-import tempfile
 import uuid
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
@@ -39,7 +37,7 @@ class ImageBuildConfig:
     image_tag: str                  # 新镜像名（有默认建议值，用户可改）
     ucm_whl_local: str = ""         # 本地 UCM whl（必填）
     wrapt_whl_local: str = ""       # 本地 wrapt whl（必填，先于 UCM 离线安装）
-    toolkit_dir: str = ""           # 可选：ucm-toolkit 源码目录（源码安装）
+    toolkit_whl_local: str = ""     # 可选：本地 ucm-toolkit whl（GitHub Releases 下载）
     platform: str = "ascend"        # ascend | cuda（写入 ENV PLATFORM）
 
     def validate(self) -> None:
@@ -51,11 +49,11 @@ class ImageBuildConfig:
             raise ImageBuildError(f"UCM whl 文件不存在: {self.ucm_whl_local}")
         if not self.wrapt_whl_local or not os.path.isfile(self.wrapt_whl_local):
             raise ImageBuildError(f"wrapt whl 文件不存在: {self.wrapt_whl_local}")
-        for path in (self.ucm_whl_local, self.wrapt_whl_local):
+        if self.toolkit_whl_local and not os.path.isfile(self.toolkit_whl_local):
+            raise ImageBuildError(f"ucm-toolkit whl 文件不存在: {self.toolkit_whl_local}")
+        for path in (self.ucm_whl_local, self.wrapt_whl_local, self.toolkit_whl_local):
             if path and re.search(r"\s", os.path.basename(path)):
                 raise ImageBuildError(f"文件名不能包含空白字符: {path}")
-        if self.toolkit_dir and not os.path.isdir(self.toolkit_dir):
-            raise ImageBuildError(f"ucm-toolkit 源码目录不存在: {self.toolkit_dir}")
 
 
 @dataclass
@@ -180,7 +178,8 @@ def generate_dockerfile(config: ImageBuildConfig, ucm_name: str,
                         wrapt_name: str, toolkit_name: str = "") -> str:
     """生成构建带 UCM 引擎镜像的 Dockerfile（纯函数，便于测试）。
 
-    wrapt 为 UCM 的唯一外部依赖，与 UCM 一同本地离线安装（--no-index）。
+    wrapt 为 UCM 的唯一外部依赖，与 UCM、ucm-toolkit 一同本地离线安装
+    （--no-index --find-links）。
     """
     offline_flags = "--no-index --find-links=/tmp/ucm-pkgs"
     lines = [
@@ -200,32 +199,10 @@ def generate_dockerfile(config: ImageBuildConfig, ucm_name: str,
     lines.append(f"RUN pip install --no-cache-dir {offline_flags} /tmp/ucm-pkgs/{ucm_name}")
     if toolkit_name:
         lines.append("")
-        lines.append("# 源码安装 ucm-toolkit")
+        lines.append("# 安装 ucm-toolkit")
         lines.append(
-            "RUN mkdir -p /tmp/ucm-toolkit-src \\")
-        lines.append(
-            f"    && tar xzf /tmp/ucm-pkgs/{toolkit_name} -C /tmp/ucm-toolkit-src --strip-components=1 \\")
-        lines.append(
-            "    && pip install --no-cache-dir /tmp/ucm-toolkit-src")
+            f"RUN pip install --no-cache-dir {offline_flags} /tmp/ucm-pkgs/{toolkit_name}")
     return "\n".join(lines) + "\n"
-
-
-def _pack_dir_tarball(dir_path: str) -> str:
-    """把本地目录打包为 tar.gz（保留顶层目录名）。"""
-    dir_path = os.path.abspath(dir_path)
-    name = os.path.basename(dir_path.rstrip("\\/"))
-    fd, tar_path = tempfile.mkstemp(prefix="ucm-toolkit-", suffix=".tar.gz")
-    os.close(fd)
-    try:
-        with tarfile.open(tar_path, "w:gz") as tf:
-            tf.add(dir_path, arcname=name)
-    except Exception:
-        try:
-            os.unlink(tar_path)
-        except OSError:
-            pass
-        raise
-    return tar_path
 
 
 class ImageBuilder:
@@ -267,47 +244,39 @@ class ImageBuilder:
         _check_cancel()
 
         try:
-            toolkit_tar = None
-            try:
-                ucm_name = _upload(config.ucm_whl_local, remote_dir, 5, 30, "UCM whl")
-                _check_cancel()
-                wrapt_name = _upload(config.wrapt_whl_local, remote_dir, 30, 40, "wrapt whl")
-                _check_cancel()
-                toolkit_name = ""
-                if config.toolkit_dir:
-                    toolkit_tar = _pack_dir_tarball(config.toolkit_dir)
-                    toolkit_name = _upload(toolkit_tar, remote_dir, 40, 55, "ucm-toolkit 源码包")
-                    _check_cancel()
-
-                progress(57, "生成 Dockerfile")
-                dockerfile = generate_dockerfile(config, ucm_name, wrapt_name, toolkit_name)
-                log("---- Dockerfile ----")
-                for line in dockerfile.splitlines():
-                    log(line)
-                log("-------------------")
-                self.ssh.write_file(f"{remote_dir}/Dockerfile", dockerfile)
-
-                progress(60, "docker build ...")
-                log(f"$ docker build -t {config.image_tag} {remote_dir}")
-                self.docker.build(remote_dir, config.image_tag,
-                                  on_line=lambda l: log(l))
+            ucm_name = _upload(config.ucm_whl_local, remote_dir, 5, 30, "UCM whl")
+            _check_cancel()
+            wrapt_name = _upload(config.wrapt_whl_local, remote_dir, 30, 40, "wrapt whl")
+            _check_cancel()
+            toolkit_name = ""
+            if config.toolkit_whl_local:
+                toolkit_name = _upload(config.toolkit_whl_local, remote_dir,
+                                       40, 55, "ucm-toolkit whl")
                 _check_cancel()
 
-                progress(92, "校验镜像内 UCM 安装")
-                ucm = self.docker.image_ucm_info(config.image_tag)
-                log(f"UCM 检查: {ucm}")
-                if not ucm.installed:
-                    raise ImageBuildError(
-                        f"镜像 {config.image_tag} 构建成功但未检测到 UCM 安装，"
-                        "请检查 whl 文件")
-                progress(100, f"构建完成: {config.image_tag}")
-                return BuildResult(ok=True, image=config.image_tag, ucm=ucm)
-            finally:
-                if toolkit_tar:
-                    try:
-                        os.unlink(toolkit_tar)
-                    except OSError:
-                        pass
+            progress(57, "生成 Dockerfile")
+            dockerfile = generate_dockerfile(config, ucm_name, wrapt_name, toolkit_name)
+            log("---- Dockerfile ----")
+            for line in dockerfile.splitlines():
+                log(line)
+            log("-------------------")
+            self.ssh.write_file(f"{remote_dir}/Dockerfile", dockerfile)
+
+            progress(60, "docker build ...")
+            log(f"$ docker build -t {config.image_tag} {remote_dir}")
+            self.docker.build(remote_dir, config.image_tag,
+                              on_line=lambda l: log(l))
+            _check_cancel()
+
+            progress(92, "校验镜像内 UCM 安装")
+            ucm = self.docker.image_ucm_info(config.image_tag)
+            log(f"UCM 检查: {ucm}")
+            if not ucm.installed:
+                raise ImageBuildError(
+                    f"镜像 {config.image_tag} 构建成功但未检测到 UCM 安装，"
+                    "请检查 whl 文件")
+            progress(100, f"构建完成: {config.image_tag}")
+            return BuildResult(ok=True, image=config.image_tag, ucm=ucm)
         except (SSHError, DockerError) as exc:
             raise ImageBuildError(str(exc)) from exc
         finally:

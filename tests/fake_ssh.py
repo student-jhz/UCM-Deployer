@@ -153,16 +153,23 @@ class FakeSSHSession:
 
 
 class FakeSSHClient:
-    """paramiko.SSHClient 替身。脚本通过 add() 注册（全局，按注册顺序匹配）。"""
+    """paramiko.SSHClient 替身。
+
+    脚本注册两级：
+    - add()：实例级（core 单测：先 connect 拿到实例再注册）
+    - add_default()：类级默认（GUI 测试：SSHClient 内部自建连接前预注册）
+    匹配时按「实例脚本 + 默认脚本」整体 LIFO（后注册优先）。
+    """
 
     connect_exception: Optional[Exception] = None
     instances: List["FakeSSHClient"] = []
+    default_scripts: List[Tuple[str, str, str, int]] = []
 
     def __init__(self):
         self.connected = False
         self.closed = False
         self.files: Dict[str, bytes] = {}
-        self.scripts: List[Tuple[str, str, str, int]] = []
+        self.scripts: List[Tuple[str, str, str, int]] = list(FakeSSHClient.default_scripts)
         self.sftp_sessions: List[FakeSFTP] = []
         self.current_session = FakeSSHSession(self)
         FakeSSHClient.instances.append(self)
@@ -172,6 +179,11 @@ class FakeSSHClient:
         return self.current_session.channels
 
     # ---------------------------------------------------------- 脚本注册
+    @classmethod
+    def add_default(cls, pattern: str, stdout: str = "", stderr: str = "",
+                    exit_code: int = 0) -> None:
+        cls.default_scripts.append((pattern, stdout, stderr, exit_code))
+
     def add(self, pattern: str, stdout: str = "", stderr: str = "",
             exit_code: int = 0) -> None:
         self.scripts.append((pattern, stdout, stderr, exit_code))

@@ -301,6 +301,39 @@ def test_image_page_download_hints(qapp, tmp_path):
     assert "pypi.org/project/wrapt/1.17.2" in page.wrapt_dl_hint.text()
     assert page.wrapt_dl_hint.openExternalLinks()
     assert "aarch64" in page.wrapt_dl_hint.text(), "应提示选择匹配服务器架构的 whl"
+    # ucm-toolkit 下载指引：与 UCM 同站点（GitHub Releases）
+    assert "unified-cache-management/releases" in page.toolkit_dl_hint.text()
+    assert page.toolkit_dl_hint.openExternalLinks()
+
+
+def test_image_page_refresh_populates_combo(qapp, tmp_path, fake_ssh):
+    """回归测试：刷新镜像列表后下拉框必须填充（日志有数据而下拉框空的 bug）。"""
+    from ucm_deployer.core.models import ServerInfo
+    from ucm_deployer.core.server_registry import ServerRegistry
+    from ucm_deployer.gui.state import AppContext
+    from ucm_deployer.gui.widgets.common import combo_ref
+    from ucm_deployer.gui.widgets.image_page import ImagePage
+
+    fake_ssh.add_default(r"^docker info", stdout="")
+    fake_ssh.add_default(
+        r"images --format",
+        stdout=("repo1\tv1\tid1\t18.2GB\t2026-08-01 10:00:00\n"
+                "repo2\tv2\tid2\t9.9GB\t2026-07-01 09:00:00\n"
+                "ucm-engine\tv0.1\tid3\t5GB\t2026-09-01 08:00:00\n"))
+
+    ctx = AppContext(ServerRegistry(tmp_path))
+    ctx.selected = [ServerInfo.create(name="n1", host="127.0.0.1")]
+    page = ImagePage(ctx)
+    page._refresh_images()
+    assert _wait_panel(page.panel, qapp), "刷新镜像列表超时"
+    qapp.processEvents()
+
+    assert page.image_combo.count() == 3, "下拉框应填充服务器上的镜像列表"
+    assert combo_ref(page.image_combo) != "", "应默认选中一个镜像"
+    # 疑似 UCM 镜像排在最前
+    assert combo_ref(page.image_combo) == "ucm-engine:v0.1"
+    # 默认镜像名已按所选镜像自动建议
+    assert page.tag_edit.text().strip() == "ucm-engine-ucm:v0.1"
 
 
 def test_image_page_whl_instant_feedback(qapp, tmp_path):

@@ -110,20 +110,29 @@ def test_dockerfile_full():
     cfg = ImageBuildConfig(base_image="quay.io/ascend/vllm-ascend:v0.23.0-a3",
                            image_tag="a-ucm:1", platform="ascend")
     df = generate_dockerfile(cfg, "ucm.whl", "wrapt-1.16.0-cp39.whl",
-                             "ucm-toolkit-src.tar.gz")
+                             "ucm_toolkit-0.1.0-py3-none-any.whl")
     assert "FROM quay.io/ascend/vllm-ascend:v0.23.0-a3" in df
     assert "ENV PLATFORM=ascend" in df
     assert "COPY ucm.whl /tmp/ucm-pkgs/" in df
     assert "COPY wrapt-1.16.0-cp39.whl /tmp/ucm-pkgs/" in df
-    assert "COPY ucm-toolkit-src.tar.gz /tmp/ucm-pkgs/" in df
+    assert "COPY ucm_toolkit-0.1.0-py3-none-any.whl /tmp/ucm-pkgs/" in df
     # wrapt 先装（离线），UCM 后装（离线 --no-index）
     wrapt_line = df.index("RUN pip install --no-cache-dir --no-index"
                           " --find-links=/tmp/ucm-pkgs /tmp/ucm-pkgs/wrapt-1.16.0-cp39.whl")
     ucm_line = df.index("RUN pip install --no-cache-dir --no-index"
                          " --find-links=/tmp/ucm-pkgs /tmp/ucm-pkgs/ucm.whl")
     assert wrapt_line < ucm_line
-    assert "tar xzf /tmp/ucm-pkgs/ucm-toolkit-src.tar.gz" in df
-    assert "pip install --no-cache-dir /tmp/ucm-toolkit-src" in df
+    # toolkit 同样离线 pip install whl
+    toolkit_line = df.index(
+        "RUN pip install --no-cache-dir --no-index"
+        " --find-links=/tmp/ucm-pkgs /tmp/ucm-pkgs/ucm_toolkit-0.1.0-py3-none-any.whl")
+    assert toolkit_line > ucm_line
+
+
+def test_dockerfile_without_toolkit():
+    cfg = ImageBuildConfig(base_image="b:1", image_tag="t:1")
+    df = generate_dockerfile(cfg, "ucm.whl", "wrapt-1.16.0-cp39.whl")
+    assert "toolkit" not in df
 
 
 # ============================================================ 配置校验
@@ -151,11 +160,30 @@ def test_config_validate_bad_tag(tmp_path):
         cfg.validate()
 
 
+def test_config_validate_bad_toolkit_whl(tmp_path):
+    cfg = ImageBuildConfig(base_image="b:1", image_tag="t:1",
+                           ucm_whl_local=make_whl(tmp_path),
+                           wrapt_whl_local=make_whl(tmp_path, "wrapt-1.whl"),
+                           toolkit_whl_local=str(tmp_path / "nope-toolkit.whl"))
+    with pytest.raises(Exception, match="toolkit"):
+        cfg.validate()
+
+
+def test_config_validate_toolkit_ok(tmp_path):
+    toolkit = make_whl(tmp_path, "ucm_toolkit-0.1.0-py3-none-any.whl")
+    cfg = ImageBuildConfig(base_image="b:1", image_tag="t:1",
+                           ucm_whl_local=make_whl(tmp_path),
+                           wrapt_whl_local=make_whl(tmp_path, "wrapt-1.whl"),
+                           toolkit_whl_local=toolkit)
+    cfg.validate()
+
+
 # ============================================================ 构建
 def test_build_full_flow(fake_ssh, tmp_path):
     ssh = make_ssh(fake_ssh)
     whl = make_whl(tmp_path)
     wrapt = make_whl(tmp_path, "wrapt-1.17.2-cp39-cp39-manylinux2014_aarch64.whl")
+    toolkit = make_whl(tmp_path, "ucm_toolkit-0.1.0-py3-none-any.whl")
 
     ssh._client.add(r"^mkdir -p .* && test -d", stdout="")
     ssh._client.add(r"^docker build -t ", stdout="Step 1/4\nSuccessfully built abc123\n")
@@ -168,6 +196,7 @@ def test_build_full_flow(fake_ssh, tmp_path):
     cfg = ImageBuildConfig(base_image="quay.io/ascend/vllm-ascend:v0.23.0-a3",
                            image_tag="vllm-ascend-ucm:v0.23.0-a3",
                            ucm_whl_local=whl, wrapt_whl_local=wrapt,
+                           toolkit_whl_local=toolkit,
                            platform="ascend")
     result = ImageBuilder(ssh).build(
         cfg, progress=lambda p, m: progress_events.append((p, m)),
@@ -176,32 +205,29 @@ def test_build_full_flow(fake_ssh, tmp_path):
     assert result.image == "vllm-ascend-ucm:v0.23.0-a3"
     assert result.ucm.installed and result.ucm.version == "0.2.1"
 
-    # 上传了两个 whl
+    # 上传了三个 whl
     puts = [p for s in ssh._client.sftp_sessions for p in s.puts]
     assert any("uc_manager-0.2.1" in p[1] for p in puts)
     assert any("wrapt-1.17.2" in p[1] for p in puts)
+    assert any("ucm_toolkit-0.1.0" in p[1] for p in puts)
 
-    # Dockerfile 写到了远端（wrapt 先装）
+    # Dockerfile 写到了远端（wrapt 先装、toolkit 为 whl 安装）
     dockerfile = ssh._client.files[
         [k for k in ssh._client.files if k.endswith("Dockerfile")][0]].decode()
-    assert "FROM quay.io/ascend/vllm-ascend:v0.23.0-a3" in df_order_ok(dockerfile)
+    assert "FROM quay.io/ascend/vllm-ascend:v0.23.0-a3" in dockerfile
+    wrapt_run = dockerfile.index("RUN pip install --no-cache-dir --no-index"
+                                 " --find-links=/tmp/ucm-pkgs /tmp/ucm-pkgs/wrapt-1.17.2")
+    ucm_run = dockerfile.index("RUN pip install --no-cache-dir --no-index"
+                               " --find-links=/tmp/ucm-pkgs /tmp/ucm-pkgs/uc_manager-0.2.1")
+    toolkit_run = dockerfile.index(
+        "RUN pip install --no-cache-dir --no-index"
+        " --find-links=/tmp/ucm-pkgs /tmp/ucm-pkgs/ucm_toolkit-0.1.0")
+    assert wrapt_run < ucm_run < toolkit_run
 
     # 进度单调不减且达到 100
     pcts = [p for p, _ in progress_events]
     assert pcts == sorted(pcts)
     assert pcts[-1] == 100
-
-
-def df_order_ok(dockerfile: str) -> str:
-    # RUN 安装顺序：wrapt 先于 UCM（wrapt 是 UCM 的依赖）
-    wrapt_run = dockerfile.index(
-        "RUN pip install --no-cache-dir --no-index"
-        " --find-links=/tmp/ucm-pkgs /tmp/ucm-pkgs/wrapt-1.17.2")
-    ucm_run = dockerfile.index(
-        "RUN pip install --no-cache-dir --no-index"
-        " --find-links=/tmp/ucm-pkgs /tmp/ucm-pkgs/uc_manager-0.2.1")
-    assert wrapt_run < ucm_run
-    return dockerfile
 
 
 def test_build_missing_base_fails(fake_ssh, tmp_path):
