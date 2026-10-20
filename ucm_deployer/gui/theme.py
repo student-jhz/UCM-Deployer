@@ -42,6 +42,23 @@ QLineEdit, QComboBox, QPlainTextEdit, QSpinBox {
 QLineEdit:disabled, QComboBox:disabled { background: #f1f5f9; color: #94a3b8; }
 QLineEdit:focus, QComboBox:focus { border: 1px solid #2f6fed; }
 
+/* 镜像下拉弹层与筛选补全列表：显式浅色（默认继承会黑底黑字不可读） */
+QComboBox QAbstractItemView {
+    background: #ffffff; color: #1e293b; border: 1px solid #cbd5e1;
+    selection-background-color: #2f6fed; selection-color: #ffffff;
+}
+QListView, QListWidget {
+    background: #ffffff; color: #1e293b; border: 1px solid #dde3ec;
+    border-radius: 6px;
+}
+QListView::item, QListWidget::item { padding: 4px 8px; }
+QListView::item:selected, QListWidget::item:selected {
+    background: #2f6fed; color: #ffffff;
+}
+QListView#imageFilterPopup {
+    background: #ffffff; color: #1e293b;
+}
+
 QPushButton {
     background: #ffffff; color: #1e293b; border: 1px solid #cbd5e1;
     border-radius: 6px; padding: 6px 14px; font-size: 13px;

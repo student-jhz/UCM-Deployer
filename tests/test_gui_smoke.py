@@ -310,6 +310,16 @@ def test_image_combo_filter(qapp):
     assert combo_ref(combo) == "ucm-vllm:v0.1"
 
 
+def test_theme_popup_contrast_rules(qapp):
+    """回归：下拉弹层/补全列表必须有显式浅色样式（默认黑底黑字不可读）。"""
+    from ucm_deployer.gui.theme import QSS
+
+    assert "QComboBox QAbstractItemView" in QSS
+    assert "#ffffff" in QSS.split("QComboBox QAbstractItemView")[1].split("}")[0]
+    assert "QListView#imageFilterPopup" in QSS
+    assert "#ffffff" in QSS.split("QListView#imageFilterPopup")[1].split("}")[0]
+
+
 def test_fill_image_combo_ordering_and_placeholder(qapp):
     from PySide6.QtWidgets import QComboBox
 
