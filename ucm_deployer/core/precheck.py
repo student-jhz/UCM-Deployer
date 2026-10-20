@@ -22,8 +22,38 @@ logger = get_logger(__name__)
 
 # 检查项行：[PASS] kernel               5.10.0
 _ITEM_RE = re.compile(r"^\[(PASS|WARN|FAIL|INFO|SKIP)\]\s+(\S+)\s*(.*)$")
-# 汇总行：Result: FAILED  |  1 pass, 1 warn, 1 fail, 1 skip, 3 info
-_SUMMARY_RE = re.compile(r"^Result:\s*(\S+)\s*\|(.*)$")
+# 汇总行：Result: PASSED (with warnings)  |  1 pass, 1 warn, 0 fail
+_SUMMARY_RE = re.compile(r"^Result:\s*(.+?)\s*\|(.*)$")
+
+# 检查项中文名与排查建议
+_CHECK_ZH = {
+    "serving_stack": (
+        "服务栈版本",
+        "信息项：记录 vLLM / vLLM-Ascend / SGLang 实际安装版本，仅展示。"),
+    "uc_manager": (
+        "UCM 安装版本",
+        "信息项：记录 uc-manager（含平台变体包）实际安装版本，仅展示。"),
+    "accelerator_driver": (
+        "加速器驱动",
+        "在宿主机运行 npu-smi info / nvidia-smi 确认驱动正常；容器内报 "
+        "'device is used (-8020)' 或 rc=172 通常为 NPU 正被其他进程/容器占用，"
+        "停用占用方后重试；确认容器已映射 npu-smi 与驱动目录。"),
+    "kernel": (
+        "内核版本",
+        "升级操作系统内核至 5.10 及以上系列（按 major.minor 比较）。"),
+    "memory_shm": (
+        "共享内存 /dev/shm",
+        "扩大共享内存至 512 GiB 及以上：容器需 --shm-size 512g"
+        "（本工具生成的命令已默认携带）；宿主机需以 size=512G 挂载 /dev/shm。"),
+    "aio_resources": (
+        "AIO 资源",
+        "信息项：记录内核 AIO 上限与占用；带宽测试 aio 引擎超时时，"
+        "可提高 fs.aio-max-nr（sysctl fs.aio-max-nr=<更大值>）或改用 psync 引擎。"),
+    "bandwidth": (
+        "存储带宽",
+        "检查挂载点所在磁盘/NVMe 的实际吞吐；尝试 aio 引擎或提高 --workers；"
+        "确认 io_direct/O_DIRECT 设置；网络存储（NFS 等）需同时检查网络带宽。"),
+}
 
 
 @dataclass
@@ -32,6 +62,8 @@ class PrecheckItem:
     name: str              # 检查项名（如 kernel / accelerator_driver）
     summary: str = ""      # 行内摘要（如 5.10.0）
     detail: str = ""       # 缩进补充行（阈值/fix 建议等）
+    name_zh: str = ""      # 中文名
+    advice: str = ""       # 中文排查建议
 
 
 @dataclass
@@ -54,6 +86,13 @@ class PrecheckResult:
     def warn_count(self) -> int:
         return sum(1 for i in self.items if i.status == "WARN")
 
+    @property
+    def verdict(self) -> str:
+        """三态判定：passed（全部通过）/ completed（完成但有警告）/ failed（未通过）。"""
+        if not self.ok:
+            return "failed"
+        return "completed" if self.warn_count else "passed"
+
 
 def parse_precheck_output(res: CommandResult) -> PrecheckResult:
     """解析 precheck 输出（--no-color 无 ANSI 码）为结构化结果。"""
@@ -64,16 +103,18 @@ def parse_precheck_output(res: CommandResult) -> PrecheckResult:
         stripped = line.strip()
         m = _ITEM_RE.match(stripped)
         if m:
-            current = PrecheckItem(status=m.group(1), name=m.group(2),
-                                   summary=m.group(3).strip())
+            name = m.group(2)
+            name_zh, advice = _CHECK_ZH.get(name, (name, ""))
+            current = PrecheckItem(status=m.group(1), name=name,
+                                   summary=m.group(3).strip(),
+                                   name_zh=name_zh, advice=advice)
             result.items.append(current)
             continue
         m = _SUMMARY_RE.match(stripped)
         if m:
             result.summary = f"Result: {m.group(1)} |{m.group(2).strip()}"
             current = None
-            continue
-        # 缩进补充行 -> 上一检查项的 detail
+            continue        # 缩进补充行 -> 上一检查项的 detail
         if current is not None and stripped and line.startswith(" "):
             if current.detail:
                 current.detail += "\n" + stripped

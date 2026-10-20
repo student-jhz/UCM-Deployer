@@ -223,17 +223,33 @@ class PrecheckPage(QWidget):
             if color is not None:
                 status_item.setForeground(color)
             self.result_table.setItem(row, 0, status_item)
-            self.result_table.setItem(row, 1, QTableWidgetItem(item.name))
-            detail = (item.summary + ("\n" + item.detail if item.detail else "")
-                      ).strip() or "-"
-            self.result_table.setItem(row, 2, QTableWidgetItem(detail))
-        verdict = "通过" if result.ok else "未通过"
-        self.summary_label.setText(
-            f"预检{verdict}（退出码 {result.exit_code}）　{result.summary}"
-            if result.summary else f"预检{verdict}（退出码 {result.exit_code}）")
-        if result.ok:
-            QMessageBox.information(self, "预检完成", f"环境预检通过。\n{result.summary}")
+            # 检查项：中文名（英文名）
+            name_text = (f"{item.name_zh}（{item.name}）"
+                         if item.name_zh and item.name_zh != item.name
+                         else item.name)
+            self.result_table.setItem(row, 1, QTableWidgetItem(name_text))
+            # 详情：原始摘要/阈值 + 中文排查建议
+            parts = []
+            if item.summary or item.detail:
+                parts.append((item.summary
+                              + ("\n" + item.detail if item.detail else "")).strip())
+            if item.advice:
+                parts.append("排查建议：" + item.advice)
+            self.result_table.setItem(row, 2, QTableWidgetItem("\n".join(parts) or "-"))
+
+        tail = f"　{result.summary}" if result.summary else ""
+        if result.verdict == "passed":
+            self.summary_label.setText(f"✓ 预检通过（无警告）{tail}")
+            QMessageBox.information(self, "预检完成", f"环境预检全部通过。\n{result.summary}")
+        elif result.verdict == "completed":
+            self.summary_label.setText(
+                f"⚠ 预检完成（存在 {result.warn_count} 项警告，非全部通过）{tail}")
+            QMessageBox.warning(
+                self, "预检完成（有警告）",
+                f"预检已运行完毕，存在 {result.warn_count} 项 WARN"
+                "（未达 FAIL，可继续部署但建议排查）。\n{result.summary}")
         else:
+            self.summary_label.setText(f"✗ 预检未通过{tail}")
             QMessageBox.warning(
                 self, "预检未通过",
                 f"环境预检存在 FAIL 项（或异常退出），请查看结果表格与日志。\n"

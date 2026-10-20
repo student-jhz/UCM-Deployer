@@ -47,6 +47,7 @@ def test_parse_sample_output():
     assert result.passed_count == 1
     assert result.failed_count == 1
     assert result.warn_count == 1
+    assert result.verdict == "failed"
     assert "FAILED" in result.summary and "1 pass" in result.summary
 
     by_name = {i.name: i for i in result.items}
@@ -60,6 +61,52 @@ def test_parse_sample_output():
     assert by_name["bandwidth"].status == "SKIP"
     assert by_name["serving_stack"].status == "INFO"
     assert by_name["serving_stack"].summary == "vllm=0.26.0, vllm-ascend=0.26.0rc1"
+
+
+def test_parse_chinese_names_and_advice():
+    """已知检查项填充中文名与排查建议。"""
+    res = CommandResult(command="precheck", exit_code=1, stdout=SAMPLE_OUTPUT)
+    result = parse_precheck_output(res)
+    by_name = {i.name: i for i in result.items}
+    assert by_name["kernel"].name_zh == "内核版本"
+    assert "升级" in by_name["kernel"].advice
+    assert by_name["memory_shm"].name_zh == "共享内存 /dev/shm"
+    assert "--shm-size" in by_name["memory_shm"].advice
+    assert by_name["accelerator_driver"].name_zh == "加速器驱动"
+    assert "npu-smi" in by_name["accelerator_driver"].advice
+    assert by_name["bandwidth"].name_zh == "存储带宽"
+    assert "NVMe" in by_name["bandwidth"].advice
+
+
+def test_parse_unknown_item_falls_back():
+    text = "[PASS] some_new_check  ok\n"
+    result = parse_precheck_output(CommandResult(command="x", exit_code=0,
+                                                 stdout=text))
+    item = result.items[0]
+    assert item.name == "some_new_check"
+    assert item.name_zh == "some_new_check"   # 未知项回退原名
+    assert item.advice == ""
+
+
+def test_verdict_three_states():
+    """三态判定：passed / completed（有警告）/ failed。"""
+    ok = "[PASS] kernel  5.10.0\n"
+    warn = ("[PASS] kernel  5.10.0\n"
+            "[WARN] memory_shm  1 GiB\n"
+            "Result: PASSED (with warnings)  |  1 pass, 1 warn, 0 fail\n")
+    fail = ("[FAIL] kernel  4.19.0\n"
+            "Result: FAILED  |  0 pass, 0 warn, 1 fail\n")
+    assert parse_precheck_output(
+        CommandResult(command="x", exit_code=0, stdout=ok)).verdict == "passed"
+    completed = parse_precheck_output(
+        CommandResult(command="x", exit_code=0, stdout=warn))
+    assert completed.verdict == "completed"
+    assert completed.warn_count == 1
+    # 含空格的判定（PASSED (with warnings)）也要完整解析进 summary
+    assert "PASSED (with warnings)" in completed.summary
+    assert "1 pass, 1 warn, 0 fail" in completed.summary
+    assert parse_precheck_output(
+        CommandResult(command="x", exit_code=1, stdout=fail)).verdict == "failed"
 
 
 def test_parse_ok_result():

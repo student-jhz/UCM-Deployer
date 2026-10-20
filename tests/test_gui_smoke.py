@@ -693,14 +693,16 @@ def test_precheck_page_runs_and_shows_result(qapp, tmp_path, fake_ssh):
     assert _wait_panel(page.panel, qapp), "预检任务超时"
     qapp.processEvents()
 
-    # 结果表格：5 个检查项逐行展示
+    # 结果表格：5 个检查项逐行展示（中文名 + 排查建议）
     assert page.result_table.rowCount() == 5
     assert page.result_table.item(0, 0).text() == "INFO"
     assert page.result_table.item(1, 0).text() == "PASS"
-    assert page.result_table.item(1, 1).text() == "kernel"
+    assert page.result_table.item(1, 1).text() == "内核版本（kernel）"
     assert "threshold" in page.result_table.item(1, 2).text()
+    assert "排查建议" in page.result_table.item(1, 2).text()
     assert page.result_table.item(3, 0).text() == "FAIL"
-    # 摘要行含判定与统计
+    assert page.result_table.item(3, 1).text() == "加速器驱动（accelerator_driver）"
+    # 摘要行：FAIL 判定为未通过
     assert "未通过" in page.summary_label.text()
     assert "FAILED" in page.summary_label.text()
 
@@ -745,3 +747,61 @@ def test_precheck_page_bandwidth_disabled_env_only(qapp, tmp_path, fake_ssh):
     assert "--skip-bandwidth" in precheck_cmd
     assert "--mount-path" not in precheck_cmd
     assert not any("mkdir -p" in c for c in cmds)
+
+
+def test_precheck_page_warn_verdict_wording(qapp, tmp_path, fake_ssh):
+    """有 WARN 但退出码 0：界面须显示「预检完成（有警告）」而非「预检通过」。"""
+    from ucm_deployer.core.models import ServerInfo
+    from ucm_deployer.core.server_registry import ServerRegistry
+    from ucm_deployer.gui.state import AppContext
+    from ucm_deployer.gui.widgets.precheck_page import PrecheckPage
+
+    sample = ("[PASS] kernel  5.10.0\n"
+              "[WARN] memory_shm  0.06 GiB\n"
+              "Result: PASSED (with warnings)  |  1 pass, 1 warn, 0 fail\n")
+    fake_ssh.add_default(r"ucm-toolkit run precheck", stdout=sample, exit_code=0)
+
+    ctx = AppContext(ServerRegistry(tmp_path))
+    s = ServerInfo.create(name="n1", host="127.0.0.1")
+    ctx.selected = [s]
+    ctx.containers = {s.id: "ucm-vllm"}
+    page = PrecheckPage(ctx)
+    page.on_enter()
+    page.bandwidth_check.setChecked(False)
+    qapp.processEvents()
+    page._run()
+    assert _wait_panel(page.panel, qapp), "预检任务超时"
+    qapp.processEvents()
+
+    text = page.summary_label.text()
+    assert "预检完成" in text, f"应为「预检完成」而非「预检通过」: {text}"
+    assert "警告" in text and "1 项" in text
+    assert "预检通过" not in text
+    assert "PASSED (with warnings)" in text, "应附带 Result 汇总行"
+
+
+def test_precheck_page_pass_verdict_wording(qapp, tmp_path, fake_ssh):
+    """全部通过无警告：显示「预检通过」。"""
+    from ucm_deployer.core.models import ServerInfo
+    from ucm_deployer.core.server_registry import ServerRegistry
+    from ucm_deployer.gui.state import AppContext
+    from ucm_deployer.gui.widgets.precheck_page import PrecheckPage
+
+    sample = ("[PASS] kernel  5.10.0\n"
+              "Result: PASSED  |  1 pass, 0 warn, 0 fail\n")
+    fake_ssh.add_default(r"ucm-toolkit run precheck", stdout=sample, exit_code=0)
+
+    ctx = AppContext(ServerRegistry(tmp_path))
+    s = ServerInfo.create(name="n1", host="127.0.0.1")
+    ctx.selected = [s]
+    ctx.containers = {s.id: "ucm-vllm"}
+    page = PrecheckPage(ctx)
+    page.on_enter()
+    page.bandwidth_check.setChecked(False)
+    qapp.processEvents()
+    page._run()
+    assert _wait_panel(page.panel, qapp), "预检任务超时"
+    qapp.processEvents()
+
+    assert "预检通过" in page.summary_label.text()
+    assert "无警告" in page.summary_label.text()
