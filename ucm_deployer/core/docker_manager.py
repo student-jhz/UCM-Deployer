@@ -121,3 +121,29 @@ class DockerManager:
                         "status": parts[3] if len(parts) > 3 else "",
                     })
         return containers
+
+    def remove_containers(self, names: List[str],
+                          on_line: Optional[Callable[[str], None]] = None) -> CommandResult:
+        """docker rm -f：删除容器（运行中的将被强制停止并删除）。"""
+        if not names:
+            raise DockerError("未指定要删除的容器")
+        refs = " ".join(shq(n) for n in names)
+        res = self.ssh.exec_stream(f"docker rm -f {refs}",
+                                   on_line=on_line, timeout=600)
+        if not res.ok:
+            raise DockerError(
+                f"docker rm 失败: {(res.stderr or res.stdout).strip()[:300]}")
+        return res
+
+    def remove_images(self, refs: List[str],
+                      on_line: Optional[Callable[[str], None]] = None) -> CommandResult:
+        """docker rmi -f：删除镜像（被运行中容器引用时可能失败，-f 强制）。"""
+        if not refs:
+            raise DockerError("未指定要删除的镜像")
+        joined = " ".join(shq(r) for r in refs)
+        res = self.ssh.exec_stream(f"docker rmi -f {joined}",
+                                   on_line=on_line, timeout=600)
+        if not res.ok:
+            raise DockerError(
+                f"docker rmi 失败: {(res.stderr or res.stdout).strip()[:300]}")
+        return res

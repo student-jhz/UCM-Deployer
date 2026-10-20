@@ -110,3 +110,49 @@ def test_run(fake_ssh):
     res = dm.run("docker run -itd --name x img:1 bash")
     assert res.ok
     assert "container-id-777" in res.stdout
+
+
+def test_remove_containers(fake_ssh):
+    dm, ssh = make_dm(fake_ssh)
+    ssh._client.add(r"^docker rm -f ", stdout="c1\nc2\n")
+    res = dm.remove_containers(["c1", "c2"])
+    assert res.ok
+    assert ssh._client.channels[-1].executed_command == "docker rm -f c1 c2"
+
+
+def test_remove_containers_empty(fake_ssh):
+    dm, _ = make_dm(fake_ssh)
+    with pytest.raises(Exception, match="未指定"):
+        dm.remove_containers([])
+
+
+def test_remove_containers_failure(fake_ssh):
+    dm, ssh = make_dm(fake_ssh)
+    ssh._client.add(r"^docker rm -f ", stderr="Error: no such container", exit_code=1)
+    with pytest.raises(Exception, match="docker rm 失败"):
+        dm.remove_containers(["nope"])
+
+
+def test_remove_images(fake_ssh):
+    dm, ssh = make_dm(fake_ssh)
+    ssh._client.add(r"^docker rmi -f ", stdout="Untagged: img:1\n")
+    res = dm.remove_images(["img:1", "img:2"])
+    assert res.ok
+    assert ssh._client.channels[-1].executed_command == "docker rmi -f img:1 img:2"
+
+
+def test_remove_images_empty(fake_ssh):
+    dm, _ = make_dm(fake_ssh)
+    with pytest.raises(Exception, match="未指定"):
+        dm.remove_images([])
+
+
+def test_list_containers_all_states(fake_ssh):
+    dm, ssh = make_dm(fake_ssh)
+    ssh._client.add(
+        r"^docker ps -a",
+        stdout="id1\tctr1\timg:1\tUp 2 hours\nid2\tctr2\timg:2\tExited (0)\n")
+    rows = dm.list_containers(all_states=True)
+    assert len(rows) == 2
+    assert rows[0]["names"] == "ctr1" and rows[0]["status"].startswith("Up")
+    assert rows[1]["names"] == "ctr2" and rows[1]["status"].startswith("Exited")

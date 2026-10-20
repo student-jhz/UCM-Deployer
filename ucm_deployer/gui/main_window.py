@@ -138,6 +138,14 @@ class MainWindow(QMainWindow):
         act_quit.triggered.connect(self.close)
         file_menu.addAction(act_quit)
 
+        tool_menu = self.menuBar().addMenu("工具(&T)")
+        act_clean_ctr = QAction("清理容器...", self)
+        act_clean_ctr.triggered.connect(lambda: self._open_cleanup("container"))
+        act_clean_img = QAction("清理镜像...", self)
+        act_clean_img.triggered.connect(lambda: self._open_cleanup("image"))
+        tool_menu.addAction(act_clean_ctr)
+        tool_menu.addAction(act_clean_img)
+
         help_menu = self.menuBar().addMenu("帮助(&H)")
         act_logs = QAction("打开日志目录", self)
         act_logs.triggered.connect(lambda: self._open_dir(self._log_dir()))
@@ -149,6 +157,16 @@ class MainWindow(QMainWindow):
             help_menu.addAction(a)
         help_menu.addSeparator()
         help_menu.addAction(act_about)
+
+    def _open_cleanup(self, mode: str) -> None:
+        """打开清理对话框（作用于当前勾选登录的服务器）。"""
+        from .widgets.cleanup_dialog import CleanupDialog
+
+        if self.ctx.server is None:
+            QMessageBox.information(
+                self, "提示", "请先在「步骤1：服务器管理」勾选要登录的服务器")
+            return
+        CleanupDialog(self.ctx, mode, self).exec()
 
     @staticmethod
     def _conf_dir() -> str:

@@ -145,7 +145,13 @@ class FakeSSHSession:
         self.channels: List[FakeChannel] = []
 
     def match(self, cmd: str) -> Optional[Tuple[str, str, int]]:
-        # 后注册的脚本优先（同一命令多次 add 时，最新一次生效）
+        # 1) 一次性队列：跨连接按注册顺序消费（首个匹配即移除并返回）
+        queue = type(self.client).default_queue
+        for i, (pattern, stdout, stderr, code) in enumerate(list(queue)):
+            if re.search(pattern, cmd):
+                queue.pop(i)
+                return stdout, stderr, code
+        # 2) 实例脚本：LIFO（后注册优先）
         for pattern, stdout, stderr, code in reversed(self.client.scripts):
             if re.search(pattern, cmd):
                 return stdout, stderr, code
@@ -164,6 +170,9 @@ class FakeSSHClient:
     connect_exception: Optional[Exception] = None
     instances: List["FakeSSHClient"] = []
     default_scripts: List[Tuple[str, str, str, int]] = []
+    # 一次性队列脚本（类级共享，按序消费）：用于表达「同一命令先后返回不同结果」
+    # 的调用时序，如：首次加载 2 条记录 -> 删除 -> 再次加载为空。
+    default_queue: List[Tuple[str, str, str, int]] = []
 
     def __init__(self):
         self.connected = False
@@ -181,8 +190,14 @@ class FakeSSHClient:
     # ---------------------------------------------------------- 脚本注册
     @classmethod
     def add_default(cls, pattern: str, stdout: str = "", stderr: str = "",
-                    exit_code: int = 0) -> None:
-        cls.default_scripts.append((pattern, stdout, stderr, exit_code))
+                    exit_code: int = 0, once: bool = False) -> None:
+        """注册类级脚本。
+
+        once=False：静态（每次连接的实例都拷贝，LIFO 匹配）；
+        once=True：一次性队列（跨连接按注册顺序消费，匹配一次即移除）。
+        """
+        entry = (pattern, stdout, stderr, exit_code)
+        (cls.default_queue if once else cls.default_scripts).append(entry)
 
     def add(self, pattern: str, stdout: str = "", stderr: str = "",
             exit_code: int = 0) -> None:

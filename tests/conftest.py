@@ -12,9 +12,11 @@ def fake_ssh(monkeypatch):
     FakeSSHClient.connect_exception = None
     FakeSSHClient.instances = []
     FakeSSHClient.default_scripts = []
+    FakeSSHClient.default_queue = []
     yield FakeSSHClient
     FakeSSHClient.connect_exception = None
     FakeSSHClient.default_scripts = []
+    FakeSSHClient.default_queue = []
 
 
 @pytest.hookimpl(hookwrapper=True)

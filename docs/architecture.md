@@ -30,6 +30,7 @@
 ┌────────────────────────────────────────────────────────┐
 │ GUI (PySide6)   3 步向导：服务器/镜像/容器              │
 │   main_window.py + widgets/{server,image,container}_page │
+│   工具菜单（清理容器/镜像）: widgets/cleanup_dialog.py   │
 ├────────────────────────────────────────────────────────┤
 │ Core 核心逻辑   ucm_deployer/core/*（不依赖 Qt）        │
 │   ssh_client  server_registry  crypto  models  shell    │
