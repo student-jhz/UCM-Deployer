@@ -2,15 +2,16 @@
 
 **UCM (Unified Cache Management) 一键部署工具 —— Windows 桌面版**
 
-面向 vLLM / vLLM-Ascend / SGLang 推理容器（Ascend NPU / NVIDIA GPU），把 UCM 的部署简化为三个向导步骤：
+面向 vLLM / vLLM-Ascend / SGLang 推理容器（Ascend NPU / NVIDIA GPU），把 UCM 的部署简化为四个向导步骤：
 
 ```
-① 服务器管理 → ② 镜像构建 → ③ 容器创建
+① 服务器管理 → ② 镜像构建 → ③ 容器创建 → ④ 环境预检
 ```
 
 - **步骤1 服务器管理**：SSH 登录信息本地加密保存/复用；单选登录一台服务器；`npu-smi`/`nvidia-smi` 设备探测（型号/卡数/CPU 架构）
 - **步骤2 镜像构建**：选服务器已有镜像（**关键字筛选**）或上传 tar 包 `docker load`；上传 wrapt whl、UCM whl、（可选）ucm-toolkit whl 包（均附**在线下载链接**，toolkit 与 UCM 同站点）；构建前自动**校验服务器/镜像/安装包匹配**（设备平台 + whl 架构标记）；生成 Dockerfile 构建带 UCM 的镜像
 - **步骤3 容器创建**：选 UCM 镜像（**选择时自动校验**镜像内 UCM）；自动识别卡数**全量映射加速卡**（NPU: 全部 davinci 设备 + 驱动挂载 + `--net=host`；GPU: `--runtime nvidia --gpus all -p 8000:8000`）；KV Cache / 模型只读 / 自定义挂载；docker run 命令**可编辑**后执行
+- **步骤4 环境预检**：在已创建容器内运行 `ucm-toolkit run precheck`（驱动/内核/共享内存/AIO 检查 + **可选挂载目录带宽测试**——在挂载目录下创建临时子目录执行读写负载、结束自动清理）；结果**表格逐项展示**（PASS/WARN/FAIL/INFO 着色）
 - **工具菜单**：清理指定容器（`docker ps -a` 勾选删除）/ 清理指定镜像（`docker images` 勾选删除），作用于当前登录的服务器
 - 步骤间**自由跳转**（前置条件在操作执行时拦截）；所有生成的命令**先展示、可编辑、再执行**
 

@@ -28,14 +28,14 @@
 
 ```
 ┌────────────────────────────────────────────────────────┐
-│ GUI (PySide6)   3 步向导：服务器/镜像/容器              │
-│   main_window.py + widgets/{server,image,container}_page │
-│   工具菜单（清理容器/镜像）: widgets/cleanup_dialog.py   │
+│ GUI (PySide6)   4 步向导：服务器/镜像/容器/预检          │
+│   main_window.py + widgets/{server,image,container,     │
+│   precheck}_page；工具菜单: cleanup_dialog.py           │
 ├────────────────────────────────────────────────────────┤
 │ Core 核心逻辑   ucm_deployer/core/*（不依赖 Qt）        │
 │   ssh_client  server_registry  crypto  models  shell    │
 │   device_detector  docker_manager                       │
-│   image_builder  container_manager                      │
+│   image_builder  container_manager  precheck            │
 ├────────────────────────────────────────────────────────┤
 │ 自验证设施                                              │
 │   tests/fake_ssh.py    单元测试级：脚本化 paramiko 替身   │
@@ -49,10 +49,11 @@
 | 步骤1 | 登录信息保存/复用、单选登录、设备与架构探测 | `server_registry` + `device_detector` + `ssh_client` |
 | 步骤2 | 基础镜像选择（筛选）/上传 tar、上传 wrapt/UCM/ucm-toolkit whl、匹配校验、构建 | `docker_manager` + `image_builder` |
 | 步骤3 | 选 UCM 镜像（自动校验）、全卡映射 docker run 生成/编辑/执行、挂载管理 | `container_manager` |
+| 步骤4 | 容器内 ucm-toolkit precheck（环境检查 + 挂载目录带宽测试，临时子目录自动清理） | `precheck` |
 
-导航策略：三步之间**允许自由跳转**（不做前置条件校验）；前置条件
-（已登录服务器/已确定 UCM 镜像）由各步骤内的操作在执行时拦截提示。
-步骤3 页面紧凑排版（挂载合并分组、提示放 tooltip），1280x860 一屏可见。
+导航策略：各步之间**允许自由跳转**（不做前置条件校验）；前置条件
+（已登录服务器/已确定 UCM 镜像/已创建容器）由各步骤内的操作在执行时拦截提示。
+步骤3/4 页面紧凑排版，1280x860 一屏可见。
 
 ## 5. 关键设计决策
 

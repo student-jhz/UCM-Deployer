@@ -72,11 +72,11 @@ def test_main_window_pages(qapp):
     win = MainWindow()
     win.show()
     qapp.processEvents()
-    for i in range(3):
+    for i in range(4):
         win.goto_step(i)
         qapp.processEvents()
     # 自由跳转：无前置校验，页面跟随到最后一步
-    assert win.pages.currentIndex() == 2
+    assert win.pages.currentIndex() == 3
     win.close()
 
 
@@ -85,7 +85,7 @@ def test_nav_is_flat_buttons(qapp):
 
     win = MainWindow()
     qapp.processEvents()
-    assert len(win._nav_buttons) == 3
+    assert len(win._nav_buttons) == 4
     assert win.nav_group.exclusive()
     for i, btn in enumerate(win._nav_buttons):
         assert btn.objectName() == "navBtn"
@@ -612,3 +612,88 @@ def test_container_page_kv_and_mounts(qapp, tmp_path):
     assert "-v /mnt/kvcache2:/mnt/kvcache2" in cmd
     assert "-v /data/models/Qwen3:/models:ro" in cmd
     assert "-v /workspace/logs:/logs" in cmd
+
+
+# ============================================================ 步骤4：环境预检
+_PRECHECK_SAMPLE = """[INFO] serving_stack        vllm=0.26.0
+[PASS] kernel               5.10.0
+        threshold: >= 5.10
+[WARN] memory_shm           shm=0.06 GiB
+[FAIL] accelerator_driver   -
+        no nvidia-smi or npu-smi found
+[SKIP] bandwidth            -
+Result: FAILED  |  1 pass, 1 warn, 1 fail, 1 skip, 1 info
+"""
+
+
+def test_precheck_page_intercepts_and_labels(qapp, tmp_path):
+    """步骤4：未登录/未建容器时拦截；容器名回显。"""
+    from ucm_deployer.core.models import ServerInfo
+    from ucm_deployer.core.server_registry import ServerRegistry
+    from ucm_deployer.gui.state import AppContext
+    from ucm_deployer.gui.widgets.precheck_page import PrecheckPage
+
+    ctx = AppContext(ServerRegistry(tmp_path))
+    page = PrecheckPage(ctx)
+    page.on_enter()
+    assert "未登录" in page.container_label.text()
+
+    s = ServerInfo.create(name="n1", host="127.0.0.1")
+    ctx.selected = [s]
+    page.on_enter()
+    assert "未创建" in page.container_label.text()
+    page._run()      # 未建容器 -> 提示（自动应答）后返回
+    qapp.processEvents()
+    assert page.result_table.rowCount() == 0
+
+    ctx.containers = {s.id: "ucm-vllm"}
+    page.on_enter()
+    assert "ucm-vllm" in page.container_label.text()
+    page.mount_edit.setText("relative/path")
+    page._run()      # 非绝对路径 -> 提示后返回
+    qapp.processEvents()
+    assert page.result_table.rowCount() == 0
+
+
+def test_precheck_page_runs_and_shows_result(qapp, tmp_path, fake_ssh):
+    """步骤4：预检执行 + 结果表格逐项展示（含状态着色）。"""
+    from ucm_deployer.core.models import ServerInfo
+    from ucm_deployer.core.server_registry import ServerRegistry
+    from ucm_deployer.gui.state import AppContext
+    from ucm_deployer.gui.widgets.precheck_page import PrecheckPage
+
+    fake_ssh.add_default(r"mkdir -p ", stdout="")
+    fake_ssh.add_default(r"ucm-toolkit run precheck",
+                         stdout=_PRECHECK_SAMPLE, exit_code=1)
+    fake_ssh.add_default(r"rm -rf ", stdout="")
+
+    ctx = AppContext(ServerRegistry(tmp_path))
+    s = ServerInfo.create(name="n1", host="127.0.0.1")
+    ctx.selected = [s]
+    ctx.containers = {s.id: "ucm-vllm"}
+    page = PrecheckPage(ctx)
+    page.on_enter()
+    page.mount_edit.setText("/mnt/kvcache")
+    page._run()
+    assert _wait_panel(page.panel, qapp), "预检任务超时"
+    qapp.processEvents()
+
+    # 结果表格：5 个检查项逐行展示
+    assert page.result_table.rowCount() == 5
+    assert page.result_table.item(0, 0).text() == "INFO"
+    assert page.result_table.item(1, 0).text() == "PASS"
+    assert page.result_table.item(1, 1).text() == "kernel"
+    assert "threshold" in page.result_table.item(1, 2).text()
+    assert page.result_table.item(3, 0).text() == "FAIL"
+    # 摘要行含判定与统计
+    assert "未通过" in page.summary_label.text()
+    assert "FAILED" in page.summary_label.text()
+
+    # 命令时序：建子目录 -> precheck --mount-path 子目录 -> 清理
+    cmds = [c.executed_command for inst in fake_ssh.instances
+            for c in inst.channels]
+    precheck_cmd = next(c for c in cmds if "ucm-toolkit run precheck" in c)
+    assert "--mount-path" in precheck_cmd
+    assert "ucm-precheck-" in precheck_cmd
+    rm_cmd = next(c for c in cmds if "rm -rf" in c)
+    assert "ucm-precheck-" in rm_cmd

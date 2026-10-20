@@ -24,12 +24,14 @@ from .state import AppContext
 from .theme import make_app_icon
 from .widgets.container_page import ContainerPage
 from .widgets.image_page import ImagePage
+from .widgets.precheck_page import PrecheckPage
 from .widgets.server_page import ServerPage
 
 _STEPS = [
     ("步骤1：服务器管理", "登录要部署的服务器，探测设备型号与卡数"),
     ("步骤2：镜像构建", "基础镜像 + wrapt/UCM/ucm-toolkit 包 → 带 UCM 的镜像"),
     ("步骤3：容器创建", "docker run（全部加速卡映射 + 模型/kvcache/自定义挂载）"),
+    ("步骤4：环境预检", "容器内运行 ucm-toolkit precheck（环境 + 可选带宽测试）"),
 ]
 
 
@@ -109,7 +111,9 @@ class MainWindow(QMainWindow):
         self.server_page = ServerPage(self.ctx)
         self.image_page = ImagePage(self.ctx)
         self.container_page = ContainerPage(self.ctx)
-        for p in (self.server_page, self.image_page, self.container_page):
+        self.precheck_page = PrecheckPage(self.ctx)
+        for p in (self.server_page, self.image_page,
+                  self.container_page, self.precheck_page):
             self.pages.addWidget(p)
 
         center = QHBoxLayout()
@@ -209,7 +213,7 @@ class MainWindow(QMainWindow):
 
     def _all_panels(self):
         return [p.panel for p in (self.server_page, self.image_page,
-                                  self.container_page)]
+                                  self.container_page, self.precheck_page)]
 
     # ------------------------------------------------------------ 导航
     def goto_step(self, row: int) -> None:
@@ -233,6 +237,8 @@ class MainWindow(QMainWindow):
             self.image_page.on_enter()
         elif row == 2:
             self.container_page.on_enter()
+        elif row == 3:
+            self.precheck_page.on_enter()
 
         self._active_row = row
         self.pages.setCurrentIndex(row)
