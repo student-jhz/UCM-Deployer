@@ -693,24 +693,30 @@ def test_precheck_page_runs_and_shows_result(qapp, tmp_path, fake_ssh):
     assert _wait_panel(page.panel, qapp), "预检任务超时"
     qapp.processEvents()
 
-    # 结果表格：5 个检查项逐行展示（中文名 + 排查建议）
+    # 结果表格：5 个检查项；摘要列只放首行摘要
     assert page.result_table.rowCount() == 5
     assert page.result_table.item(0, 0).text() == "INFO"
     assert page.result_table.item(1, 0).text() == "PASS"
     assert page.result_table.item(1, 1).text() == "内核版本（kernel）"
-    assert "threshold" in page.result_table.item(1, 2).text()
-    assert "排查建议" in page.result_table.item(1, 2).text()
+    assert page.result_table.item(1, 2).text() == "5.10.0"
     assert page.result_table.item(3, 0).text() == "FAIL"
     assert page.result_table.item(3, 1).text() == "加速器驱动（accelerator_driver）"
     # 摘要行：FAIL 判定为未通过
     assert "未通过" in page.summary_label.text()
     assert "FAILED" in page.summary_label.text()
 
-    # 多行详情自适应行高：加速器驱动行（4 行文本）高于单行行高
-    default_h = page.result_table.verticalHeader().defaultSectionSize()
-    row_h = page.result_table.rowHeight(3)
-    assert row_h > default_h, \
-        f"多行详情行高 {row_h} 未自适应（默认 {default_h}，详情会被截断）"
+    # 默认选中首个 WARN/FAIL 行，详情区立即显示完整内容
+    assert page.result_table.currentRow() == 2      # memory_shm（首个 WARN）
+    assert "共享内存" in page.detail_view.toPlainText()
+    assert "排查建议" in page.detail_view.toPlainText()
+
+    # 点击其他行 -> 详情区联动（kernel：阈值 + 排查建议完整可见）
+    page.result_table.setCurrentCell(1, 0)
+    qapp.processEvents()
+    detail = page.detail_view.toPlainText()
+    assert "内核版本" in detail
+    assert "threshold: >= 5.10" in detail
+    assert "排查建议" in detail and "升级" in detail
 
     # 命令时序：建子目录 -> precheck --mount-path 子目录 -> 清理
     cmds = [c.executed_command for inst in fake_ssh.instances

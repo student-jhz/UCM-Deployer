@@ -12,6 +12,7 @@ from typing import List
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QDialog,
     QGroupBox,
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
@@ -46,6 +48,8 @@ class PrecheckPage(QWidget):
     def __init__(self, ctx: AppContext, parent=None):
         super().__init__(parent)
         self.ctx = ctx
+        self._result_items = []
+        self._result_summary = ""
 
         # ---------- 预检参数
         cfg_box = QGroupBox("1. 预检参数")
@@ -95,20 +99,35 @@ class PrecheckPage(QWidget):
         self.summary_label = QLabel("尚未预检")
         self.summary_label.setProperty("role", "hint")
         self.result_table = QTableWidget(0, 3)
-        self.result_table.setHorizontalHeaderLabels(["状态", "检查项", "详情"])
+        self.result_table.setHorizontalHeaderLabels(["状态", "检查项", "摘要"])
         header = self.result_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.Stretch)
         self.result_table.verticalHeader().setVisible(False)
         self.result_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.result_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.result_table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.result_table.setAlternatingRowColors(True)
-        self.result_table.setWordWrap(True)
+        self.result_table.itemSelectionChanged.connect(self._show_selected_detail)
+
+        # 详情区：选中行后显示该检查项完整详情与排查建议（表格只放摘要）
+        self.detail_view = QTextBrowser()
+        self.detail_view.setOpenExternalLinks(False)
+        self.detail_view.setMinimumHeight(96)
+        self.detail_view.setMaximumHeight(160)
+        self.detail_view.setPlaceholderText(
+            "点击上方结果行，此处显示该检查项的完整详情与排查建议")
 
         result_layout = QVBoxLayout(result_box)
         result_layout.setSpacing(4)
+        layout_row = QHBoxLayout()
+        layout_row.addWidget(self.result_table, 3)
+        layout_col = QVBoxLayout()
+        layout_col.addWidget(self.detail_view, 1)
+        layout_row.addLayout(layout_col, 2)
+        result_layout.addLayout(layout_row)
         result_layout.addWidget(self.summary_label)
-        result_layout.addWidget(self.result_table, 1)
 
         self.panel = ParallelTaskPanel()
 
@@ -214,6 +233,8 @@ class PrecheckPage(QWidget):
 
     # ------------------------------------------------------------ 结果展示
     def _show_result(self, result) -> None:
+        self._result_items = list(result.items)
+        self._result_summary = result.summary
         self.result_table.setRowCount(0)
         for item in result.items:
             row = self.result_table.rowCount()
@@ -228,17 +249,39 @@ class PrecheckPage(QWidget):
                          if item.name_zh and item.name_zh != item.name
                          else item.name)
             self.result_table.setItem(row, 1, QTableWidgetItem(name_text))
-            # 详情：原始摘要/阈值 + 中文排查建议
-            parts = []
-            if item.summary or item.detail:
-                parts.append((item.summary
-                              + ("\n" + item.detail if item.detail else "")).strip())
-            if item.advice:
-                parts.append("排查建议：" + item.advice)
-            self.result_table.setItem(row, 2, QTableWidgetItem("\n".join(parts) or "-"))
-        # 详情多行内容自适应行高（否则垂直截断只能看到第一行）
+            # 摘要列只放首行摘要（完整详情/排查建议见右侧详情区）
+            self.result_table.setItem(row, 2, QTableWidgetItem(item.summary or "-"))
+        self.result_table.resizeColumnsToContents()
         self.result_table.resizeRowsToContents()
+        # 默认选中首个 WARN/FAIL 项（无则第一行），立即联动详情区
+        select_row = 0
+        for i, item in enumerate(result.items):
+            if item.status in ("FAIL", "WARN"):
+                select_row = i
+                break
+        self.result_table.setCurrentCell(select_row, 0)
+        self._update_summary_label(result)
 
+    def _show_selected_detail(self) -> None:
+        """右侧详情区：显示选中检查项的完整详情与中文排查建议。"""
+        import html as _html
+
+        items = getattr(self, "_result_items", [])
+        row = self.result_table.currentRow()
+        if row < 0 or row >= len(items):
+            return
+        item = items[row]
+        parts = [f"<b>{_html.escape(item.name_zh or item.name)}"
+                 f"（{_html.escape(item.name)}）</b>　[{item.status}]"]
+        if item.summary:
+            parts.append(_html.escape(item.summary))
+        if item.detail:
+            parts.append(_html.escape(item.detail).replace("\n", "<br>"))
+        if item.advice:
+            parts.append(f"<b>排查建议：</b>{_html.escape(item.advice)}")
+        self.detail_view.setHtml("<br>".join(parts))
+
+    def _update_summary_label(self, result) -> None:
         tail = f"　{result.summary}" if result.summary else ""
         if result.verdict == "passed":
             self.summary_label.setText(f"✓ 预检通过（无警告）{tail}")
