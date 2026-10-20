@@ -46,8 +46,12 @@
 | 步骤 | 功能 | 模块 |
 |---|---|---|
 | 步骤1 | 登录信息保存/复用、单选登录、设备与架构探测 | `server_registry` + `device_detector` + `ssh_client` |
-| 步骤2 | 基础镜像选择（筛选）/上传 tar、上传 wrapt/UCM/ucm-toolkit 包、匹配校验、构建 | `docker_manager` + `image_builder` |
+| 步骤2 | 基础镜像选择（筛选）/上传 tar、上传 wrapt/UCM/ucm-toolkit whl、匹配校验、构建 | `docker_manager` + `image_builder` |
 | 步骤3 | 选 UCM 镜像（自动校验）、全卡映射 docker run 生成/编辑/执行、挂载管理 | `container_manager` |
+
+导航策略：三步之间**允许自由跳转**（不做前置条件校验）；前置条件
+（已登录服务器/已确定 UCM 镜像）由各步骤内的操作在执行时拦截提示。
+步骤3 页面紧凑排版（挂载合并分组、提示放 tooltip），1280x860 一屏可见。
 
 ## 5. 关键设计决策
 
@@ -112,10 +116,11 @@ TerminateProcess 从未执行（这正是最初"保险失效"的原因）。
 
 ## 6. 测试体系
 
-- **单元测试（FakeSSH）**：`tests/fake_ssh.py` 用脚本化替身（按注册顺序 LIFO 匹配）
-  替换 `paramiko.SSHClient`，覆盖内存文件系统/SFTP 记录/流式 channel，
+- **单元测试（FakeSSH）**：`tests/fake_ssh.py` 用脚本化替身（实例级/类级两级注册，
+  LIFO 匹配）替换 `paramiko.SSHClient`，覆盖内存文件系统/SFTP 记录/流式 channel，
   所有 core 模块可在纯本机跑单测；
-- **GUI 冒烟**：`QT_QPA_PLATFORM=offscreen` 下实例化页面验证交互逻辑；
+- **GUI 冒烟**：`QT_QPA_PLATFORM=offscreen` 下实例化页面验证交互逻辑
+  （自由跳转、操作拦截、镜像筛选、命名建议联动、一屏排版断言）；
   界面渲染质量用像素采样断言（不依赖人工看图）；
 - 共 85 项测试。
 

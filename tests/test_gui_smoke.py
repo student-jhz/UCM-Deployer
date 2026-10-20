@@ -75,8 +75,8 @@ def test_main_window_pages(qapp):
     for i in range(3):
         win.goto_step(i)
         qapp.processEvents()
-    # 步骤1 无服务器时所有切换被拒绝，页面停留在第0页
-    assert win.pages.currentIndex() == 0
+    # 自由跳转：无前置校验，页面跟随到最后一步
+    assert win.pages.currentIndex() == 2
     win.close()
 
 
@@ -97,8 +97,8 @@ def test_nav_is_flat_buttons(qapp):
     win.close()
 
 
-def test_nav_rejected_restores_previous_step(qapp, tmp_path):
-    """前置条件不满足时：提示后导航应停留在当前步骤（不跳走）。"""
+def test_nav_free_jump(qapp, tmp_path):
+    """自由跳转：无服务器/无镜像也可进入任意步骤（操作时才拦截）。"""
     from ucm_deployer.core.models import ServerInfo
     from ucm_deployer.gui.main_window import MainWindow
 
@@ -107,28 +107,44 @@ def test_nav_rejected_restores_previous_step(qapp, tmp_path):
     win.show()
     qapp.processEvents()
 
-    # 无服务器 -> 点步骤2被拒，导航回 0
-    win.goto_step(1)
+    # 无服务器 -> 步骤2/3 均可直接进入
+    win.goto_step(2)
     qapp.processEvents()
-    assert win.current_step() == 0
-    assert win.pages.currentIndex() == 0
-
-    # 选服务器 -> 步骤2可进；无镜像 -> 步骤3被拒，导航回 1
-    win.ctx.selected = [s]
+    assert win.current_step() == 2
+    assert win.pages.currentIndex() == 2
     win.goto_step(1)
     qapp.processEvents()
     assert win.current_step() == 1
-    win.goto_step(2)
+    win.goto_step(0)
     qapp.processEvents()
-    assert win.current_step() == 1, "无镜像时步骤3应被拒并停留在步骤2"
-    assert win._nav_buttons[1].isChecked(), "被拒后按钮选中态应回到步骤2"
+    assert win.current_step() == 0
 
-    # 有镜像 -> 步骤3可进
-    win.ctx.images = {s.id: "img:t"}
+    # 有服务器无镜像 -> 步骤3 也可进入
+    win.ctx.selected = [s]
     win.goto_step(2)
     qapp.processEvents()
     assert win.current_step() == 2
     win.close()
+
+
+def test_container_page_intercepts_without_server(qapp, tmp_path):
+    """操作时拦截：未登录服务器时创建容器/刷新镜像被拦截且状态不变。"""
+    from ucm_deployer.core.server_registry import ServerRegistry
+    from ucm_deployer.gui.state import AppContext
+    from ucm_deployer.gui.widgets.container_page import ContainerPage
+
+    ctx = AppContext(ServerRegistry(tmp_path))
+    page = ContainerPage(ctx)
+    page.on_enter()
+    qapp.processEvents()
+    # 未登录：进入页面提示状态、下拉为占位
+    assert "未登录服务器" in page.ucm_check_label.text()
+
+    page._create()          # 弹提示（自动应答）后返回，不创建
+    page._refresh_images()
+    qapp.processEvents()
+    assert ctx.containers == {}
+    assert page._images == []
 
 
 def test_container_page_fits_one_screen(qapp):

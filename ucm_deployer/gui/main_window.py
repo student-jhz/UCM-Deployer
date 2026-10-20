@@ -205,52 +205,20 @@ class MainWindow(QMainWindow):
         return self._active_row
 
     def _switch(self, row: int) -> None:
-        """步骤切换守卫：前置条件不满足时弹提示并把导航恢复到当前步骤。"""
+        """步骤切换：允许自由跳转到任意步骤；前置条件由各步骤内的操作拦截。"""
         if row == self._active_row:
             self.pages.setCurrentIndex(row)
             self._update_status()
             return
 
-        if row == 0:
-            pass
-        elif row in (1, 2):
-            if not self._require_servers():
-                self._restore_nav()
-                return
-            if row == 2 and not self._require_images():
-                self._restore_nav()
-                return
-            if row == 1:
-                self.image_page.on_enter()
-            else:
-                self.container_page.on_enter()
+        if row == 1:
+            self.image_page.on_enter()
+        elif row == 2:
+            self.container_page.on_enter()
 
         self._active_row = row
         self.pages.setCurrentIndex(row)
         self._update_status()
-
-    def _restore_nav(self) -> None:
-        """把导航选中恢复到当前已进入的步骤（程序化 setChecked 不触发 _switch）。"""
-        if 0 <= self._active_row < len(self._nav_buttons):
-            self._nav_buttons[self._active_row].setChecked(True)
-
-    def _require_servers(self) -> bool:
-        server = self.ctx.server
-        if server is None:
-            QMessageBox.warning(self, "未完成：步骤1",
-                                "请先在「步骤1：服务器管理」勾选要登录的服务器")
-            return False
-        return True
-
-    def _require_images(self) -> bool:
-        server = self.ctx.server
-        if server is None or not self.ctx.images.get(server.id):
-            QMessageBox.warning(
-                self, "未完成：步骤2",
-                "还未确定 UCM 镜像。\n\n请先在「步骤2：镜像构建」构建带 UCM 的镜像，"
-                "或选择并校验已有 UCM 镜像。")
-            return False
-        return True
 
     def _prev(self) -> None:
         if self._active_row > 0:

@@ -355,8 +355,11 @@ class ImagePage(QWidget):
 
     def _check_ucm(self) -> None:
         server = self.ctx.server
+        if server is None:
+            QMessageBox.information(self, "提示", "请先在步骤1勾选要登录的服务器")
+            return
         base = self._selected_base()
-        if server is None or base is None:
+        if base is None:
             return
 
         def fn(ssh, tctx):
