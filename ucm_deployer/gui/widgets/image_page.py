@@ -29,7 +29,7 @@ from ...core.docker_manager import DockerManager
 from ...core.image_builder import (ImageBuildConfig, ImageBuilder,
                                    fetch_server_arch, suggest_tag,
                                    upload_image_tar, validate_build_match,
-                                   whl_arch)
+                                   whl_arch, whl_version)
 from ...core.models import DeviceType, DockerImage
 from ..state import AppContext
 from .common import (ParallelTaskPanel, QuickTask, combo_ref, fill_image_combo,
@@ -43,6 +43,8 @@ class ImagePage(QWidget):
         self._images: List[DockerImage] = []
         self._loaded_sid: Optional[str] = None
         self._quick_tasks = []      # 运行中的 QuickTask 引用（防线程被回收）
+        self._tag_dirty = False     # 用户手动编辑过新镜像名（停止自动建议）
+        self._updating_tag = False  # 程序设置 tag 中（不算用户编辑）
 
         # ---------- 1. 选择基础镜像
         image_box = QGroupBox("1. 选择基础镜像（服务器上已有镜像）")
@@ -125,7 +127,8 @@ class ImagePage(QWidget):
         self.wrapt_whl_edit.textChanged.connect(
             lambda t: self._update_whl_feedback(self.wrapt_fb, t))
         self.ucm_whl_edit.textChanged.connect(
-            lambda t: self._update_whl_feedback(self.ucm_fb, t))
+            lambda t: (self._update_whl_feedback(self.ucm_fb, t),
+                       self._suggest_tag_if_empty()))   # UCM 版本号影响建议名
         self.toolkit_edit.textChanged.connect(
             lambda t: self._update_whl_feedback(self.toolkit_fb, t))
 
@@ -152,7 +155,8 @@ class ImagePage(QWidget):
         # ---------- 3. 新镜像名
         name_box = QGroupBox("3. 新镜像名")
         self.tag_edit = QLineEdit()
-        self.tag_edit.setPlaceholderText("默认根据基础镜像自动生成，如 vllm-ascend-ucm:...")
+        self.tag_edit.setPlaceholderText("默认自动生成：<基础镜像名>:ucm-<UCM版本号>，可修改")
+        self.tag_edit.textChanged.connect(self._on_tag_edited)
         self.platform_label = QLabel("-（进入本页后按服务器设备自动确定）")
         name_form = QFormLayout(name_box)
         name_form.addRow("新镜像名", self.tag_edit)
@@ -223,10 +227,21 @@ class ImagePage(QWidget):
         return ref
 
     def _suggest_tag_if_empty(self, *_):
-        if not self.tag_edit.text().strip():
-            ref = combo_ref(self.image_combo)
-            if ref:
-                self.tag_edit.setText(suggest_tag(ref))
+        """镜像/UCM whl 变化时刷新建议名；用户手动编辑过则不覆盖。"""
+        if self._tag_dirty:
+            return
+        ref = combo_ref(self.image_combo)
+        if not ref:
+            return
+        ucm_ver = whl_version(self.ucm_whl_edit.text().strip())
+        self._updating_tag = True
+        self.tag_edit.setText(suggest_tag(ref, ucm_ver))
+        self._updating_tag = False
+
+    def _on_tag_edited(self, text: str):
+        """区分用户编辑与程序设置：用户改过即停止自动建议。"""
+        if not self._updating_tag and text.strip():
+            self._tag_dirty = True
 
     def _update_whl_feedback(self, label: QLabel, text: str) -> None:
         """whl 路径即时反馈：文件存在性 + 架构标记解析。"""
@@ -301,10 +316,7 @@ class ImagePage(QWidget):
         server = self.ctx.server
         current = self.ctx.images.get(server.id, "") if server else ""
         fill_image_combo(self.image_combo, self._images, current=current)
-        if not self.tag_edit.text().strip():
-            ref = combo_ref(self.image_combo)
-            if ref:
-                self.tag_edit.setText(suggest_tag(ref))
+        self._suggest_tag_if_empty()
 
     def _upload_tar(self) -> None:
         server = self.ctx.server
@@ -421,7 +433,8 @@ class ImagePage(QWidget):
         if args is None:
             return
         server, base, ucm_whl, wrapt_whl, toolkit = args
-        tag = self.tag_edit.text().strip() or suggest_tag(base)
+        tag = (self.tag_edit.text().strip()
+               or suggest_tag(base, whl_version(ucm_whl)))
         dev = self.ctx.device_of(server)
         platform = "cuda" if dev.device_type == DeviceType.NVIDIA else "ascend"
 

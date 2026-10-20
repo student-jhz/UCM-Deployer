@@ -383,8 +383,46 @@ def test_image_page_refresh_populates_combo(qapp, tmp_path, fake_ssh):
     assert combo_ref(page.image_combo) != "", "应默认选中一个镜像"
     # 疑似 UCM 镜像排在最前
     assert combo_ref(page.image_combo) == "ucm-engine:v0.1"
-    # 默认镜像名已按所选镜像自动建议
-    assert page.tag_edit.text().strip() == "ucm-engine-ucm:v0.1"
+    # 默认镜像名已按所选镜像自动建议（<基础镜像名>:ucm）
+    assert page.tag_edit.text().strip() == "ucm-engine:ucm"
+
+
+def test_image_page_tag_suggest_follows_ucm_whl(qapp, tmp_path):
+    """新镜像名建议：选择 UCM whl 后带版本号；用户手动编辑后不再覆盖。"""
+    from ucm_deployer.core.models import ServerInfo
+    from ucm_deployer.core.server_registry import ServerRegistry
+    from ucm_deployer.gui.state import AppContext
+    from ucm_deployer.gui.widgets.common import fill_image_combo
+    from ucm_deployer.gui.widgets.image_page import ImagePage
+    from ucm_deployer.core.models import DockerImage
+
+    ctx = AppContext(ServerRegistry(tmp_path))
+    s = ServerInfo.create(name="n1", host="127.0.0.1")
+    ctx.selected = [s]
+    page = ImagePage(ctx)
+    fill_image_combo(page.image_combo,
+                     [DockerImage("vllm-ascend", "v0.23.0-a3", "i", "18GB")],
+                     current="vllm-ascend:v0.23.0-a3")
+    # fill_image_combo 内部 blockSignals，手动触发建议（与 _apply_images 一致）
+    page._suggest_tag_if_empty()
+    qapp.processEvents()
+    assert page.tag_edit.text() == "vllm-ascend:ucm"
+
+    # 选择 UCM whl -> 建议名带上版本号
+    ucm = tmp_path / "uc_manager-0.8.0.dev20261015-py3-none-any.whl"
+    ucm.write_bytes(b"PK")
+    page.ucm_whl_edit.setText(str(ucm))
+    qapp.processEvents()
+    assert page.tag_edit.text() == "vllm-ascend:ucm-0.8.0.dev20261015"
+
+    # 用户手动编辑 -> 自动建议停止覆盖
+    page.tag_edit.setText("my-custom-image:1")
+    qapp.processEvents()
+    ucm2 = tmp_path / "uc_manager-9.9.9-py3-none-any.whl"
+    ucm2.write_bytes(b"PK")
+    page.ucm_whl_edit.setText(str(ucm2))
+    qapp.processEvents()
+    assert page.tag_edit.text() == "my-custom-image:1"
 
 
 def test_image_page_whl_instant_feedback(qapp, tmp_path):

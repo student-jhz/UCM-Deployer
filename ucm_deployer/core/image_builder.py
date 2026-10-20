@@ -74,16 +74,27 @@ class MatchResult:
     errors: List[str] = field(default_factory=list)
 
 
-def suggest_tag(base_ref: str) -> str:
-    """根据基础镜像生成默认新镜像名，如 vllm-ascend:v0.23.0 -> vllm-ascend-ucm:v0.23.0"""
+def suggest_tag(base_ref: str, ucm_version: str = "") -> str:
+    """根据基础镜像与 UCM 版本生成新镜像名。
+
+    如 vllm-ascend:v0.23.0-a3 + UCM 0.8.0 -> vllm-ascend:ucm-0.8.0；
+    未提供版本时为 vllm-ascend:ucm。
+    """
     base_ref = (base_ref or "").strip()
-    if not base_ref:
-        return "ucm-engine:latest"
     repo, _, tag = base_ref.rpartition(":")
     if not repo or "/" in tag:
-        repo, tag = base_ref, "latest"
-    short = repo.split("/")[-1] or "engine"
-    return f"{short}-ucm:{tag}"
+        repo = base_ref or "ucm-engine"
+    suffix = f"ucm-{ucm_version}" if ucm_version else "ucm"
+    return f"{repo}:{suffix}"
+
+
+def whl_version(filename: str) -> str:
+    """从 whl 文件名解析版本号（{name}-{version}-{python}-{abi}-{platform}.whl）。"""
+    name = os.path.basename(filename or "")
+    if not name.lower().endswith(".whl"):
+        return ""
+    parts = name[:-4].split("-")
+    return parts[1] if len(parts) >= 5 else ""
 
 
 def image_platform(base_image: str) -> str:

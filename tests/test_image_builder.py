@@ -11,6 +11,7 @@ from ucm_deployer.core.image_builder import (
     upload_image_tar,
     validate_build_match,
     whl_arch,
+    whl_version,
 )
 from ucm_deployer.core.models import DeviceInfo, DeviceType, ServerInfo
 from ucm_deployer.core.ssh_client import SSHClient
@@ -30,10 +31,25 @@ def make_whl(tmp_path, name="uc_manager-0.2.1-py3-none-any.whl"):
 
 # ============================================================ 纯函数
 def test_suggest_tag():
-    assert suggest_tag("quay.io/ascend/vllm-ascend:v0.23.0-a3") == \
-        "vllm-ascend-ucm:v0.23.0-a3"
-    assert suggest_tag("vllm/vllm-openai") == "vllm-openai-ucm:latest"
-    assert suggest_tag("") == "ucm-engine:latest"
+    # 基础镜像名:ucm-<UCM版本号>
+    assert suggest_tag("quay.io/ascend/vllm-ascend:v0.23.0-a3",
+                       "0.8.0.dev20261015") == \
+        "quay.io/ascend/vllm-ascend:ucm-0.8.0.dev20261015"
+    assert suggest_tag("vllm/vllm-openai:latest", "0.2.1") == \
+        "vllm/vllm-openai:ucm-0.2.1"
+    # 无 UCM 版本时
+    assert suggest_tag("vllm-ascend:v0.23.0-a3") == "vllm-ascend:ucm"
+    # 无 tag 的基础镜像
+    assert suggest_tag("vllm/vllm-openai", "1.0") == "vllm/vllm-openai:ucm-1.0"
+    assert suggest_tag("") == "ucm-engine:ucm"
+
+
+def test_whl_version():
+    assert whl_version("uc_manager-0.2.1-py3-none-any.whl") == "0.2.1"
+    assert whl_version("uc_manager-0.8.0.dev20261015-py3-none-any.whl") == \
+        "0.8.0.dev20261015"
+    assert whl_version("wrapt-1.17.2-cp39-cp39-manylinux2014_x86_64.whl") == "1.17.2"
+    assert whl_version("not-a-whl.txt") == ""
 
 
 def test_image_platform():
