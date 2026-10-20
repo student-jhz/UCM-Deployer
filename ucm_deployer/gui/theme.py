@@ -31,7 +31,7 @@ QPushButton#navBtn:checked {
 
 QGroupBox {
     font-weight: 600; color: #1e293b; border: 1px solid #dde3ec;
-    border-radius: 8px; margin-top: 12px; padding-top: 6px; background: #ffffff;
+    border-radius: 8px; margin-top: 8px; padding-top: 4px; background: #ffffff;
 }
 QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }
 

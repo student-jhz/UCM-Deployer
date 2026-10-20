@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """步骤3：容器创建 —— 选择 UCM 镜像（选择时自动校验）、docker run 生成/编辑/执行。
 
-自动识别服务器卡数并映射全部加速卡（NPU: 全部 davinci 设备 + 驱动挂载；
-GPU: --runtime nvidia --gpus all）。用户选择模型目录、kvcache 目录与自定义挂载。
+排版目标：1280x860 一屏可见（无滚动条）——挂载配置合并为一个分组，
+提示文字精简，详细说明放 tooltip。
 """
 from __future__ import annotations
 
@@ -12,9 +12,9 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QFormLayout,
-    QFrame,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -24,7 +24,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
-    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -54,6 +53,7 @@ class _PathPickRow(QWidget):
         browse.clicked.connect(self._browse)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
         layout.addWidget(self.edit, 1)
         layout.addWidget(browse)
 
@@ -84,109 +84,100 @@ class ContainerPage(QWidget):
         self._ucm_state: Dict[str, UCMInfo] = {}   # 镜像 ref -> UCM 校验结果
         self._quick_tasks = []                      # 运行中的 QuickTask 引用
 
-        # ---------- 镜像与容器
-        top_box = QGroupBox("1. UCM 镜像与容器")
-        self.image_combo = self._make_image_combo()
+        # ---------- 1. UCM 镜像与容器参数（紧凑：两行）
+        top_box = QGroupBox("1. UCM 镜像与容器参数")
+        self.image_combo = QComboBox()
+        setup_image_combo(self.image_combo)
+        self.image_combo.setMinimumWidth(420)
+        self.image_combo.currentIndexChanged.connect(self._on_image_changed)
+        refresh_img_btn = QPushButton("🔄 刷新镜像")
+        refresh_img_btn.clicked.connect(self._refresh_images)
         self.ucm_check_label = QLabel("镜像 UCM：未校验")
         self.ucm_check_label.setProperty("role", "hint")
         self.ucm_check_label.setWordWrap(True)
+        self.ucm_check_label.setToolTip("选择镜像后自动在服务器上校验镜像内 UCM 安装情况")
 
-        refresh_img_btn = QPushButton("🔄 刷新镜像")
-        refresh_img_btn.clicked.connect(self._refresh_images)
         self.name_edit = QLineEdit("ucm-vllm")
         self.shm_edit = QLineEdit("512g")
         self.net_edit = QLineEdit("host")
-        self.net_edit.setToolTip(
-            "docker run --net 参数（Ascend 容器使用；NVIDIA 容器固定用 -p 端口映射）")
+        self.net_edit.setToolTip("docker run --net 参数（Ascend 容器使用；NVIDIA 容器固定 -p 端口映射）")
+        self.shm_edit.setFixedWidth(90)
+        self.net_edit.setFixedWidth(110)
 
-        img_form = QFormLayout()
-        img_form.addRow("镜像（已装 UCM）", self.image_combo)
-        img_form.addRow("", self.ucm_check_label)
-        top_btns = QHBoxLayout()
-        top_btns.addWidget(refresh_img_btn)
-        top_btns.addStretch(1)
-        form = QFormLayout()
-        form.addRow("容器名", self.name_edit)
-        form.addRow("shm-size", self.shm_edit)
-        form.addRow("网络(Ascend)", self.net_edit)
-        inner = QHBoxLayout()
-        inner.addLayout(form)
-        inner.addStretch(1)
-
+        img_row = QHBoxLayout()
+        img_row.addWidget(self.image_combo, 1)
+        img_row.addWidget(refresh_img_btn)
+        params_row = QHBoxLayout()
+        params_row.addWidget(QLabel("容器名"))
+        params_row.addWidget(self.name_edit)
+        params_row.addWidget(QLabel("shm-size"))
+        params_row.addWidget(self.shm_edit)
+        params_row.addWidget(QLabel("网络(Ascend)"))
+        params_row.addWidget(self.net_edit)
+        params_row.addStretch(1)
         top_layout = QVBoxLayout(top_box)
-        top_layout.addLayout(img_form)
-        top_layout.addLayout(top_btns)
-        top_layout.addLayout(inner)
+        top_layout.setSpacing(4)
+        top_layout.addLayout(img_row)
+        top_layout.addWidget(self.ucm_check_label)
+        top_layout.addLayout(params_row)
 
-        # ---------- kvcache 挂载
-        kv_box = QGroupBox("2. KV Cache 挂载目录")
+        # ---------- 2. 挂载（KV Cache / 模型 / 自定义，合并一个分组）
+        mount_box = QGroupBox("2. 挂载（KV Cache / 模型 / 自定义）")
         self.kv_list = QListWidget()
-        self.kv_list.setMaximumHeight(100)
-        kv_add_row = _PathPickRow(self)
-        kv_add_btn = QPushButton("➕ 添加目录")
+        self.kv_list.setMaximumHeight(72)
+        self.kv_list.setToolTip(
+            "KV Cache 目录列表（挂载到容器内相同路径）。\n"
+            "单机部署本地目录即可；多目录须位于同一文件系统。")
+        kv_add_row = _PathPickRow(self, "/mnt/kvcache...")
+        kv_add_btn = QPushButton("➕ 添加")
         kv_del_btn = QPushButton("🗑 移除选中")
         kv_check_btn = QPushButton("🔍 文件系统校验")
         kv_add_btn.clicked.connect(self._kv_add)
         kv_del_btn.clicked.connect(self._kv_del)
         kv_check_btn.clicked.connect(self._kv_check)
-        row = QHBoxLayout()
-        row.addWidget(kv_add_row, 1)
-        row.addWidget(kv_add_btn)
-        row.addWidget(kv_del_btn)
-        row.addWidget(kv_check_btn)
-        self.kv_hint = QLabel(
-            "目录将挂载到容器内相同路径；单机部署本地目录即可，"
-            "多目录须位于同一文件系统。")
-        self.kv_hint.setProperty("role", "hint")
-        self.kv_hint.setWordWrap(True)
-        kv_layout = QVBoxLayout(kv_box)
-        kv_layout.addLayout(row)
-        kv_layout.addWidget(self.kv_list)
-        kv_layout.addWidget(self.kv_hint)
-        self.kv_add_row = kv_add_row
 
-        # ---------- 模型与其他挂载
-        mount_box = QGroupBox("3. 模型路径（只读）与自定义挂载")
         self.model_host = _PathPickRow(self, "/data/models/...")
         self.model_container = QLineEdit("/models")
-        self.model_ro = QCheckBox("只读(ro)")
+        self.model_ro = QCheckBox("只读")
         self.model_ro.setChecked(True)
-        mform = QFormLayout()
-        r = QHBoxLayout()
-        r.addWidget(self.model_host, 1)
-        r.addWidget(QLabel("→ 容器内"))
-        r.addWidget(self.model_container, 1)
-        r.addWidget(self.model_ro)
-        mform.addRow("模型路径", r)
-
+        ex_add_btn = QPushButton("➕ 添加挂载")
+        ex_del_btn = QPushButton("🗑 删除选中")
+        ex_add_btn.clicked.connect(self._extra_add)
+        ex_del_btn.clicked.connect(self._extra_del)
         self.extra_table = QTableWidget(0, 3)
         self.extra_table.setHorizontalHeaderLabels(["宿主机路径", "容器内路径", "只读"])
         self.extra_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.extra_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.extra_table.verticalHeader().setVisible(False)
-        ex_add_btn = QPushButton("➕ 添加挂载")
-        ex_del_btn = QPushButton("🗑 删除选中")
-        ex_add_btn.clicked.connect(self._extra_add)
-        ex_del_btn.clicked.connect(self._extra_del)
+        self.extra_table.setMaximumHeight(96)
+
+        mount_layout = QVBoxLayout(mount_box)
+        mount_layout.setSpacing(4)
+        kv_row = QHBoxLayout()
+        kv_row.addWidget(kv_add_row, 1)
+        kv_row.addWidget(kv_add_btn)
+        kv_row.addWidget(kv_del_btn)
+        kv_row.addWidget(kv_check_btn)
+        mount_layout.addLayout(kv_row)
+        mount_layout.addWidget(self.kv_list)
+        self.kv_add_row = kv_add_row
+        model_row = QHBoxLayout()
+        model_row.addWidget(QLabel("模型路径"), 0)
+        model_row.addWidget(self.model_host, 1)
+        model_row.addWidget(QLabel("→ 容器内"))
+        model_row.addWidget(self.model_container, 1)
+        model_row.addWidget(self.model_ro)
+        mount_layout.addLayout(model_row)
         ex_row = QHBoxLayout()
+        ex_row.addWidget(QLabel("自定义挂载"))
         ex_row.addWidget(ex_add_btn)
         ex_row.addWidget(ex_del_btn)
         ex_row.addStretch(1)
-        ex_layout = QVBoxLayout(mount_box)
-        ex_layout.addLayout(mform)
-        ex_layout.addWidget(QLabel("自定义挂载："))
-        ex_layout.addWidget(self.extra_table, 1)
-        ex_layout.addLayout(ex_row)
+        mount_layout.addLayout(ex_row)
+        mount_layout.addWidget(self.extra_table)
 
-        # ---------- 命令预览（可编辑）
-        cmd_box = QGroupBox("4. docker run 命令（自动生成，可编辑后执行）")
-        self.cmd_edit = QPlainTextEdit()
-        self.cmd_edit.setProperty("role", "code")
-        font = QFont("Consolas")
-        font.setStyleHint(QFont.Monospace)
-        self.cmd_edit.setFont(font)
-        self.cmd_edit.setPlaceholderText("点击「生成/刷新命令」生成 docker run 命令")
-        self.cmd_edit.setMinimumHeight(220)
+        # ---------- 3. docker run 命令（按钮在上，编辑框占余下空间）
+        cmd_box = QGroupBox("3. docker run 命令（自动生成，可编辑后执行）")
         regen_btn = QPushButton("🔁 生成/刷新命令")
         create_btn = QPushButton("🚀 创建容器")
         create_btn.setProperty("accent", True)
@@ -194,55 +185,47 @@ class ContainerPage(QWidget):
         regen_btn.clicked.connect(self._regen)
         create_btn.clicked.connect(self._create)
         check_ctr_btn.clicked.connect(self._check_container_ucm)
-        self.cmd_hint = QLabel(
-            "自动识别服务器卡数并映射全部加速卡（NPU: 全部 davinci 设备 + 驱动挂载；"
-            "GPU: --runtime nvidia --gpus all -p 8000:8000）；命令可编辑，创建时按编辑框内容执行。")
-        self.cmd_hint.setProperty("role", "hint")
-        self.cmd_hint.setWordWrap(True)
+        self.cmd_edit = QPlainTextEdit()
+        self.cmd_edit.setProperty("role", "code")
+        font = QFont("Consolas")
+        font.setStyleHint(QFont.Monospace)
+        self.cmd_edit.setFont(font)
+        self.cmd_edit.setPlaceholderText("点击「生成/刷新命令」生成 docker run 命令")
+        self.cmd_edit.setMinimumHeight(110)
+        self.cmd_edit.setToolTip(
+            "自动识别服务器卡数并映射全部加速卡：\n"
+            "NPU: 全部 /dev/davinci* 设备 + 驱动挂载 + --net=host\n"
+            "GPU: --runtime nvidia --gpus all -p 8000:8000\n"
+            "命令可编辑，创建容器时按编辑框内容执行。")
+
+        cmd_layout = QVBoxLayout(cmd_box)
+        cmd_layout.setSpacing(4)
         btns = QHBoxLayout()
         btns.addWidget(regen_btn)
         btns.addWidget(create_btn)
         btns.addWidget(check_ctr_btn)
         btns.addStretch(1)
-        cmd_layout = QVBoxLayout(cmd_box)
-        cmd_layout.addWidget(self.cmd_edit)
-        cmd_layout.addWidget(self.cmd_hint)
         cmd_layout.addLayout(btns)
+        cmd_layout.addWidget(self.cmd_edit, 1)
 
         self.panel = ParallelTaskPanel()
 
-        # ---------- 配置区放入滚动容器（窗口小时可滚动）
-        config_widget = QWidget()
-        config_layout = QVBoxLayout(config_widget)
-        config_layout.setContentsMargins(0, 0, 0, 0)
-        config_layout.addWidget(top_box)
-        config_layout.addWidget(kv_box)
-        config_layout.addWidget(mount_box)
-        config_layout.addWidget(cmd_box)
-
-        self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setFrameShape(QFrame.NoFrame)
-        self.scroll.setWidget(config_widget)
-        self.scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}")
-        self.scroll.viewport().setAutoFillBackground(False)
-
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.scroll, 3)
+        layout.setSpacing(6)
+        layout.addWidget(top_box)
+        layout.addWidget(mount_box)
+        layout.addWidget(cmd_box, 1)
         layout.addWidget(self.panel, 2)
 
     # ------------------------------------------------------------ 辅助
-    def _make_image_combo(self):
-        from PySide6.QtWidgets import QComboBox
-
-        combo = QComboBox()
-        setup_image_combo(combo)
-        combo.setMinimumWidth(440)
-        combo.currentIndexChanged.connect(self._on_image_changed)
-        return combo
-
     def on_enter(self) -> None:
+        server = self.ctx.server
+        if server is None:
+            self._images = []
+            fill_image_combo(self.image_combo, [])
+            self.ucm_check_label.setText("镜像 UCM：未登录服务器（请回步骤1勾选）")
+            return
         self._refresh_images()
 
     def current_image(self) -> str:
@@ -367,6 +350,7 @@ class ContainerPage(QWidget):
             return
         server = self.ctx.server
         if server is None:
+            QMessageBox.information(self, "提示", "请先在步骤1勾选要登录的服务器")
             return
 
         def fn():
@@ -406,7 +390,7 @@ class ContainerPage(QWidget):
     def _refresh_images(self) -> None:
         server = self.ctx.server
         if server is None:
-            fill_image_combo(self.image_combo, [])
+            QMessageBox.information(self, "提示", "请先在步骤1勾选要登录的服务器")
             return
 
         def fn():
@@ -479,6 +463,7 @@ class ContainerPage(QWidget):
     def _check_container_ucm(self) -> None:
         server = self.ctx.server
         if server is None:
+            QMessageBox.information(self, "提示", "请先在步骤1勾选要登录的服务器")
             return
         name = self.name_edit.text().strip()
 

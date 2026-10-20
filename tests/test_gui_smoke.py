@@ -131,6 +131,29 @@ def test_nav_rejected_restores_previous_step(qapp, tmp_path):
     win.close()
 
 
+def test_container_page_fits_one_screen(qapp):
+    """排版回归：步骤3 一屏可见（无滚动容器，关键区域获得合理布局尺寸）。"""
+    from ucm_deployer.gui.main_window import MainWindow
+
+    win = MainWindow()
+    win.resize(1280, 860)
+    win.show()
+    qapp.processEvents()
+    win.goto_step(2)
+    qapp.processEvents()
+
+    page = win.container_page
+    # 布局最小需求须适配窗口可用高度（超出则内容被裁剪）
+    available = win.centralWidget().height()
+    assert page.minimumSizeHint().height() <= available, \
+        f"步骤3 最小高度 {page.minimumSizeHint().height()}px 超过可用 {available}px"
+    # 布局实际分配后：命令编辑框/挂载表格/任务面板均获得可用尺寸（未被压没）
+    assert page.cmd_edit.height() >= 100, f"命令框被压缩: {page.cmd_edit.height()}px"
+    assert page.extra_table.height() >= 60, f"自定义挂载表格被压缩: {page.extra_table.height()}px"
+    assert page.panel.height() >= 100, f"任务面板被压缩: {page.panel.height()}px"
+    win.close()
+
+
 def test_status_bar_summary(qapp, tmp_path):
     from ucm_deployer.core.models import ServerInfo
     from ucm_deployer.core.server_registry import ServerRegistry
@@ -496,6 +519,7 @@ def test_container_page_command_gen(qapp, tmp_path):
     from ucm_deployer.gui.state import AppContext
     from ucm_deployer.gui.widgets.common import fill_image_combo
     from ucm_deployer.gui.widgets.container_page import ContainerPage
+    from PySide6.QtWidgets import QScrollArea
 
     ctx = AppContext(ServerRegistry(tmp_path))
     s1 = ServerInfo.create(name="n1", host=UNREACHABLE_HOST, port=UNREACHABLE_PORT)
@@ -504,6 +528,8 @@ def test_container_page_command_gen(qapp, tmp_path):
     ctx.images = {s1.id: "img:t1"}
 
     page = ContainerPage(ctx)
+    # 排版回归：不再使用滚动容器（内容须一屏可见）
+    assert page.findChild(QScrollArea) is None
     fill_image_combo(page.image_combo, [DockerImage("img", "t1", "i", "1GB")],
                      current="img:t1")
     page._regen()
