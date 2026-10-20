@@ -195,8 +195,7 @@ def test_server_page_single_selection(qapp, tmp_path):
     ctx.registry.upsert(_mk_server(ctx, "node1", "10.0.0.1"))
     ctx.registry.upsert(_mk_server(ctx, "node2", "10.0.0.2"))
     page = ServerPage(ctx)
-    page.refresh()
-    qapp.processEvents()
+    # 回归：构造后（打开程序）即显示历史服务器，无需先添加一条
     assert page.table.rowCount() == 2
 
     page.table.item(0, 0).setCheckState(Qt.Checked)
@@ -210,6 +209,58 @@ def test_server_page_single_selection(qapp, tmp_path):
     assert len(ctx.selected) == 1
     assert ctx.selected[0].name == "node2"
     assert ctx.server.name == "node2"
+
+
+def test_server_page_actions_target_checked(qapp, tmp_path):
+    """回归：编辑/删除作用于勾选的服务器（不再用 currentRow，避免焦点转移后残留）。"""
+    from PySide6.QtCore import Qt
+
+    from ucm_deployer.core.server_registry import ServerRegistry
+    from ucm_deployer.gui.state import AppContext
+    from ucm_deployer.gui.widgets.server_page import ServerPage
+
+    ctx = AppContext(ServerRegistry(tmp_path))
+    s1 = _mk_server(ctx, "node1", "10.0.0.1")
+    _mk_server(ctx, "node2", "10.0.0.2")
+    page = ServerPage(ctx)
+
+    # 未勾选时：操作对象为 None（各操作弹提示，不误用旧行）
+    assert page._current_server() is None
+
+    # 勾选 node1 后：即使焦点/选中行在其他位置，操作对象仍是勾选的 node1
+    page.table.item(0, 0).setCheckState(Qt.Checked)
+    qapp.processEvents()
+    page.table.setCurrentCell(1, 2)      # 选中行在 node2（焦点漂移）
+    qapp.processEvents()
+    assert page._current_server().id == s1.id
+
+    # 删除作用于勾选的 node1（而非选中行的 node2）
+    page._delete()
+    qapp.processEvents()
+    names = [s.name for s in ctx.registry.list_servers()]
+    assert names == ["node2"], "删除应作用于勾选的服务器而非选中行"
+    assert ctx.selected == []
+
+
+def test_server_page_add_auto_checks(qapp, tmp_path):
+    """回归：添加服务器后自动勾选登录。"""
+    from ucm_deployer.core.server_registry import ServerRegistry
+    from ucm_deployer.gui.state import AppContext
+    from ucm_deployer.gui.widgets.server_page import ServerEditDialog, ServerPage
+
+    ctx = AppContext(ServerRegistry(tmp_path))
+    page = ServerPage(ctx)
+
+    orig_exec = ServerEditDialog.exec
+    ServerEditDialog.exec = lambda self, *a, **k: ServerEditDialog.Accepted
+    try:
+        page._add()
+    finally:
+        ServerEditDialog.exec = orig_exec
+    qapp.processEvents()
+    assert page.table.rowCount() == 1
+    assert len(ctx.selected) == 1, "新增后应自动勾选登录"
+    assert ctx.server is not None
 
 
 def _mk_server(ctx, name, host):

@@ -156,6 +156,7 @@ class ServerPage(QWidget):
 
         self.hint = QLabel(
             "勾选「登录」选择本次要操作的服务器（一次一台，换勾自动切换）；"
+            "编辑/删除/测试连接/探测设备均作用于勾选的服务器；"
             "登录信息保存在 ~/.ucm_deployer/servers.json（密码加密）。")
         self.hint.setWordWrap(True)
 
@@ -166,6 +167,7 @@ class ServerPage(QWidget):
         layout.addWidget(self.hint)
         layout.addWidget(self.table, 1)
         layout.addWidget(self.panel, 2)
+        self.refresh()      # 打开即显示历史保存的服务器
 
     # ------------------------------------------------------------ 表格
     def refresh(self) -> None:
@@ -179,6 +181,7 @@ class ServerPage(QWidget):
             check = QTableWidgetItem()
             check.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
             check.setCheckState(Qt.Checked if s.id in selected_ids else Qt.Unchecked)
+            check.setToolTip("勾选 = 登录该服务器（单选）")
             self.table.setItem(row, 0, check)
             self.table.setItem(row, 1, QTableWidgetItem(s.name))
             self.table.setItem(row, 2, QTableWidgetItem(s.host))
@@ -191,13 +194,8 @@ class ServerPage(QWidget):
         self.table.itemChanged.connect(self._on_item_changed)
 
     def _current_server(self) -> Optional[ServerInfo]:
-        row = self.table.currentRow()
-        if row < 0:
-            return None
-        servers = self.ctx.registry.list_servers()
-        if 0 <= row < len(servers):
-            return servers[row]
-        return None
+        """当前操作对象：勾选「登录」的服务器（与所有操作按钮一致）。"""
+        return self.ctx.selected[0] if self.ctx.selected else None
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
         if item.column() != 0:
@@ -236,13 +234,20 @@ class ServerPage(QWidget):
     def _add(self) -> None:
         dlg = ServerEditDialog(self)
         if dlg.exec() == QDialog.Accepted:
-            self.ctx.registry.upsert(dlg.build_server_info())
+            info = dlg.build_server_info()
+            self.ctx.registry.upsert(info)
+            # 新增后自动勾选登录（省去手动勾选一步）
+            self.ctx.selected = [info]
+            self.ctx.devices.pop(info.id, None)
+            self.ctx.reset_after_servers_changed()
             self.refresh()
+            self.selection_changed.emit()
 
     def _edit(self) -> None:
         server = self._current_server()
         if server is None:
-            QMessageBox.information(self, "提示", "请先选中一行")
+            QMessageBox.information(
+                self, "提示", "请先勾选「登录」要编辑的服务器（表格第一列）")
             return
         dlg = ServerEditDialog(self, server)
         if dlg.exec() == QDialog.Accepted:
@@ -252,7 +257,8 @@ class ServerPage(QWidget):
     def _delete(self) -> None:
         server = self._current_server()
         if server is None:
-            QMessageBox.information(self, "提示", "请先选中一行")
+            QMessageBox.information(
+                self, "提示", "请先勾选「登录」要删除的服务器（表格第一列）")
             return
         if QMessageBox.question(self, "确认删除",
                                 f"删除服务器 {server.name} ({server.endpoint}) 的登录信息？"
