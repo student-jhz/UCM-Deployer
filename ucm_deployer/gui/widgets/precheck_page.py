@@ -236,6 +236,8 @@ class PrecheckPage(QWidget):
             if item.advice:
                 parts.append("排查建议：" + item.advice)
             self.result_table.setItem(row, 2, QTableWidgetItem("\n".join(parts) or "-"))
+        # 详情多行内容自适应行高（否则垂直截断只能看到第一行）
+        self.result_table.resizeRowsToContents()
 
         tail = f"　{result.summary}" if result.summary else ""
         if result.verdict == "passed":

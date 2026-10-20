@@ -706,6 +706,12 @@ def test_precheck_page_runs_and_shows_result(qapp, tmp_path, fake_ssh):
     assert "未通过" in page.summary_label.text()
     assert "FAILED" in page.summary_label.text()
 
+    # 多行详情自适应行高：加速器驱动行（4 行文本）高于单行行高
+    default_h = page.result_table.verticalHeader().defaultSectionSize()
+    row_h = page.result_table.rowHeight(3)
+    assert row_h > default_h, \
+        f"多行详情行高 {row_h} 未自适应（默认 {default_h}，详情会被截断）"
+
     # 命令时序：建子目录 -> precheck --mount-path 子目录 -> 清理
     cmds = [c.executed_command for inst in fake_ssh.instances
             for c in inst.channels]
