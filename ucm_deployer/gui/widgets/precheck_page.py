@@ -29,10 +29,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...core.precheck import PrecheckRunner
+from ...core.precheck import CONFIG_CONTAINER_PATH, PrecheckRunner
 from ...core.ssh_client import SSHClient
 from ..state import AppContext
-from .common import ParallelTaskPanel, RemoteDirDialog
+from .common import ParallelTaskPanel, QuickTask, RemoteDirDialog
 
 _STATUS_COLORS = {
     "PASS": QColor("#16a34a"),
@@ -49,13 +49,15 @@ class PrecheckPage(QWidget):
         self.ctx = ctx
         self._result_items = []
         self._result_summary = ""
+        self._custom_config = False    # 容器内自定义预检配置是否启用
+        self._quick_tasks = []         # 运行中的 QuickTask 引用（防线程被回收）
 
         # ---------- 预检参数
         cfg_box = QGroupBox("1. 预检参数")
         self.container_label = QLabel("目标容器：未创建（请先在步骤3创建容器）")
         self.container_label.setProperty("role", "hint")
 
-        self.bandwidth_check = QCheckBox("执行存储带宽检查（默认开启）")
+        self.bandwidth_check = QCheckBox("执行存储带宽检查")
         self.bandwidth_check.setChecked(True)
         self.bandwidth_check.setToolTip(
             "开启：在指定挂载目录下创建临时子目录 ucm-precheck-* 执行读写负载，\n"
@@ -81,6 +83,16 @@ class PrecheckPage(QWidget):
         run_btn.setProperty("accent", True)
         run_btn.clicked.connect(self._run)
 
+        # 预检参数配置入口（容器内 JSON，--config 叠加于出厂默认之上）
+        self.config_btn = QPushButton("⚙ 预检参数配置...")
+        self.config_btn.setToolTip(
+            "查看/编辑容器内的 precheck JSON 配置（带宽矩阵、阈值等），\n"
+            "保存到容器内 " + CONFIG_CONTAINER_PATH +
+            "，预检时以 --config 引用，\n叠加于 ucm-toolkit 出厂默认之上（只需写要覆盖的键）。")
+        self.config_btn.clicked.connect(self._open_config_dialog)
+        self.config_status_label = QLabel("预检参数：出厂默认")
+        self.config_status_label.setProperty("role", "hint")
+
         cfg_layout = QVBoxLayout(cfg_box)
         cfg_layout.setSpacing(4)
         cfg_layout.addWidget(self.container_label)
@@ -91,6 +103,10 @@ class PrecheckPage(QWidget):
         mount_row.addWidget(mount_btn)
         mount_row.addWidget(run_btn)
         cfg_layout.addLayout(mount_row)
+        config_row = QHBoxLayout()
+        config_row.addWidget(self.config_btn)
+        config_row.addWidget(self.config_status_label, 1)
+        cfg_layout.addLayout(config_row)
         cfg_layout.addWidget(self.mount_hint)
 
         # ---------- 结果
@@ -138,9 +154,23 @@ class PrecheckPage(QWidget):
         layout.addWidget(self.panel, 2)
 
     # ------------------------------------------------------------ 辅助
+    def _run_quick(self, fn, on_done) -> None:
+        """后台快任务：保持引用防止运行中线程被回收，完成后自动清理。"""
+        task = QuickTask(fn, self)
+        task.signals.sig_done.connect(on_done)
+
+        def _cleanup(*_):
+            if task in self._quick_tasks:
+                self._quick_tasks.remove(task)
+
+        task.signals.sig_done.connect(_cleanup)
+        self._quick_tasks.append(task)
+        task.start()
+
     def on_enter(self) -> None:
         self._refresh_container_label()
         self._on_bandwidth_toggled()
+        self._refresh_config_status()
 
     def _on_bandwidth_toggled(self, *_) -> None:
         """带宽检查开关：关闭时挂载目录不可用（免填）。"""
@@ -148,6 +178,45 @@ class PrecheckPage(QWidget):
         self.mount_edit.setEnabled(on)
         if not on:
             self.mount_edit.clear()
+
+    def _refresh_config_status(self) -> None:
+        """后台探测容器内自定义配置是否存在（应对容器重建/手动删除）。"""
+        server = self.ctx.server
+        container = self.ctx.containers.get(server.id) if server else None
+        if server is None or not container:
+            self._custom_config = False
+            self.config_status_label.setText("预检参数：出厂默认")
+            return
+
+        def fn():
+            with SSHClient(server) as ssh:
+                return PrecheckRunner(ssh).config_exists(container)
+
+        def on_done(exists, error):
+            self._custom_config = bool(exists) and error is None
+            if self._custom_config:
+                self.config_status_label.setText(
+                    f"预检参数：自定义配置已启用（{CONFIG_CONTAINER_PATH}）")
+            else:
+                self.config_status_label.setText("预检参数：出厂默认")
+
+        self._run_quick(fn, on_done)
+
+    def _open_config_dialog(self) -> None:
+        from .precheck_config_dialog import PrecheckConfigDialog
+
+        server = self.ctx.server
+        if server is None:
+            QMessageBox.information(self, "提示", "请先在步骤1勾选要登录的服务器")
+            return
+        container = self.ctx.containers.get(server.id)
+        if not container:
+            QMessageBox.information(
+                self, "提示", "请先在步骤3创建容器，再配置预检参数。")
+            return
+        dlg = PrecheckConfigDialog(self.ctx, container, self)
+        dlg.exec()
+        self._refresh_config_status()
 
     def _refresh_container_label(self) -> None:
         server = self.ctx.server
@@ -216,6 +285,7 @@ class PrecheckPage(QWidget):
             result = runner.run(
                 container, mount_path=mount_path,
                 skip_bandwidth=not bandwidth,
+                config_path=CONFIG_CONTAINER_PATH if self._custom_config else "",
                 on_line=lambda line: tctx.log(line))
             for item in result.items:
                 detail = (item.summary + ("\n" + item.detail if item.detail else "")

@@ -129,6 +129,10 @@ class PrecheckError(Exception):
     """预检执行失败。"""
 
 
+# 自定义预检配置在容器内的固定位置（run 时以 --config 引用）
+CONFIG_CONTAINER_PATH = "/root/ucm-deploy/precheck.json"
+
+
 class PrecheckRunner:
     def __init__(self, ssh: SSHClient, docker: Optional[DockerManager] = None):
         self.ssh = ssh
@@ -160,19 +164,103 @@ class PrecheckRunner:
                 "请确认步骤3 已把该目录映射进容器（带宽测试须在容器内可见的"
                 "挂载存储上执行）。")
 
+    # ------------------------------------------------------------ 配置文件
+    def locate_default_config(self, container: str) -> str:
+        """定位容器内随 ucm-toolkit 安装的 precheck.defaults.json 路径。
+
+        配置文件按 ucm_toolkit 包安装位置定位（config.py 以 __file__ 相对
+        寻址），位于 <site-packages>/ucm_toolkit/tools/precheck/ 下。
+        """
+        py = ("import ucm_toolkit, os; "
+              "print(os.path.join(os.path.dirname(ucm_toolkit.__file__), "
+              "'tools', 'precheck', 'precheck.defaults.json'))")
+        res = self._exec_in_container(container, f"python3 -c {shq(py)}")
+        path = res.stdout.strip() if res.ok else ""
+        return path if path.startswith("/") else ""
+
+    def read_default_config(self, container: str) -> str:
+        """读取容器内安装的出厂默认配置 JSON 文本（供界面加载编辑）。"""
+        path = self.locate_default_config(container)
+        if not path:
+            raise PrecheckError(
+                "未能在容器内定位 precheck.defaults.json（请确认镜像内已安装"
+                " ucm-toolkit，且容器内 python3 可用）。")
+        res = self._exec_in_container(container, f"cat {shq(path)}")
+        if not res.ok:
+            raise PrecheckError(
+                f"读取默认配置失败 {path}: "
+                f"{(res.stderr or res.stdout).strip()[:200]}")
+        return res.stdout
+
+    def config_exists(self, container: str) -> bool:
+        """容器内是否已存在自定义预检配置。"""
+        res = self._exec_in_container(
+            container, f"test -f {shq(CONFIG_CONTAINER_PATH)}")
+        return res.ok
+
+    def read_custom_config(self, container: str) -> str:
+        """读取容器内已保存的自定义配置 JSON 文本（须先 config_exists）。"""
+        res = self._exec_in_container(
+            container, f"cat {shq(CONFIG_CONTAINER_PATH)}")
+        if not res.ok:
+            raise PrecheckError(
+                f"读取自定义预检配置失败 {CONFIG_CONTAINER_PATH}: "
+                f"{(res.stderr or res.stdout).strip()[:200]}")
+        return res.stdout
+
+    def save_config(self, container: str, json_text: str) -> None:
+        """校验 JSON 并写入容器内自定义配置（叠加于出厂默认之上）。"""
+        try:
+            import json as _json
+
+            _json.loads(json_text)
+        except ValueError as exc:
+            raise PrecheckError(f"配置不是合法 JSON: {exc}")
+        parent = CONFIG_CONTAINER_PATH.rsplit("/", 1)[0]
+        res = self._exec_in_container(
+            container,
+            f"mkdir -p {shq(parent)} && "
+            f"printf '%s' {shq(json_text)} > {shq(CONFIG_CONTAINER_PATH)}")
+        if not res.ok:
+            raise PrecheckError(
+                f"保存预检配置到容器失败 {CONFIG_CONTAINER_PATH}: "
+                f"{(res.stderr or res.stdout).strip()[:200]}")
+
+    def remove_config(self, container: str) -> bool:
+        """删除容器内自定义配置（恢复出厂默认）；返回删除前是否存在。"""
+        if not self.config_exists(container):
+            return False
+        res = self._exec_in_container(
+            container, f"rm -f {shq(CONFIG_CONTAINER_PATH)}")
+        if not res.ok:
+            raise PrecheckError(
+                f"删除预检配置失败 {CONFIG_CONTAINER_PATH}: "
+                f"{(res.stderr or res.stdout).strip()[:200]}")
+        return True
+
     # ------------------------------------------------------------ API
     def run(self, container: str, mount_path: str = "",
             skip_bandwidth: bool = False, timeout: float = 3600,
+            config_path: str = "",
             on_line: Optional[Callable[[str], None]] = None) -> PrecheckResult:
         """在容器内运行 ucm-toolkit run precheck。
 
         mount_path 非空时在其下创建临时子目录做带宽测试并自动清理；
         否则按 skip_bandwidth 决定是否跳过带宽检查（默认跳过）。
+        config_path 非空时以 --config 引用容器内的自定义配置
+        （叠加于出厂默认之上；文件不存在则报错）。
         临时子目录的创建/清理会通过 on_line 播报（[deployer] 前缀），
         便于用户在环境上核对目录是否存在/已被清除。
         """
         sub_dir = ""
         arg = ""
+        if config_path:
+            res = self._exec_in_container(container, f"test -f {shq(config_path)}")
+            if not res.ok:
+                raise PrecheckError(
+                    f"自定义预检配置在容器内不存在: {config_path}\n"
+                    "请重新打开「预检参数配置」保存，或恢复默认配置。")
+            arg = f"--config {shq(config_path)}"
         if mount_path:
             mount_path = mount_path.rstrip("/") or "/"
             self._ensure_dir_in_container(container, mount_path)
@@ -185,9 +273,10 @@ class PrecheckRunner:
             if on_line:
                 on_line(f"[deployer] 带宽测试临时目录: {sub_dir}（预检结束后自动清理，"
                         "可在环境上核对）")
-            arg = f"--mount-path {shq(sub_dir)}"
+            mount_arg = f"--mount-path {shq(sub_dir)}"
+            arg = f"{arg} {mount_arg}".strip()
         elif skip_bandwidth:
-            arg = "--skip-bandwidth"
+            arg = f"{arg} --skip-bandwidth".strip()
 
         cmd = (f"docker exec {shq(container)} ucm-toolkit run precheck"
                f" --no-color {arg}").rstrip()

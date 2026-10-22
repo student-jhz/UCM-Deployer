@@ -820,3 +820,85 @@ def test_precheck_page_pass_verdict_wording(qapp, tmp_path, fake_ssh):
 
     assert "预检通过" in page.summary_label.text()
     assert "无警告" in page.summary_label.text()
+
+
+def test_precheck_config_dialog_flow(qapp, tmp_path, fake_ssh):
+    """预检参数配置对话框：加载默认 -> 校验 -> 保存并启用；页面状态联动。"""
+    import time as _t
+
+    from ucm_deployer.core.models import ServerInfo
+    from ucm_deployer.core.server_registry import ServerRegistry
+    from ucm_deployer.gui.state import AppContext
+    from ucm_deployer.gui.widgets.precheck_config_dialog import PrecheckConfigDialog
+    from ucm_deployer.gui.widgets.precheck_page import PrecheckPage
+
+    defaults_json = '{"kernel_min": "5.10", "bandwidth": {"threshold_gb": 8.0}}'
+    # 一次性队列（按调用时序消费）：页面探测(无自定义) -> 对话框探测(无自定义)
+    # -> 定位安装位置 -> 读默认 -> 保存写入 -> 页面刷新(自定义已启用)
+    fake_ssh.add_default(r"test -f /root/ucm-deploy/precheck.json",
+                         exit_code=1, once=True)
+    fake_ssh.add_default(r"test -f /root/ucm-deploy/precheck.json",
+                         exit_code=1, once=True)
+    fake_ssh.add_default(
+        r"python3 -c ",
+        stdout="/site/ucm_toolkit/tools/precheck/precheck.defaults.json\n",
+        once=True)
+    fake_ssh.add_default(r"cat /site/", stdout=defaults_json, once=True)
+    fake_ssh.add_default(r"mkdir -p /root/ucm-deploy", stdout="", once=True)
+    fake_ssh.add_default(r"test -f /root/ucm-deploy/precheck.json",
+                         stdout="", once=True)
+
+    ctx = AppContext(ServerRegistry(tmp_path))
+    s = ServerInfo.create(name="n1", host="127.0.0.1")
+    ctx.selected = [s]
+    ctx.containers = {s.id: "ucm-vllm"}
+
+    # 页面进入：探测到无自定义配置 -> 出厂默认
+    page = PrecheckPage(ctx)
+    page.on_enter()
+    deadline = _t.time() + 15
+    while page._quick_tasks and _t.time() < deadline:
+        qapp.processEvents(); _t.sleep(0.05)
+    qapp.processEvents()
+    assert "出厂默认" in page.config_status_label.text()
+    assert page._custom_config is False
+
+    # 打开对话框：自动加载出厂默认（优先自定义，不存在则默认）
+    dlg = PrecheckConfigDialog(ctx, "ucm-vllm")
+    deadline = _t.time() + 15
+    while dlg._quick_tasks and _t.time() < deadline:
+        qapp.processEvents(); _t.sleep(0.05)
+    qapp.processEvents()
+    assert '"kernel_min"' in dlg.editor.toPlainText()
+    # 加载成功（"已加载"提示覆盖实时校验文案；语法正确体现为可保存）
+    assert "已加载" in dlg.validate_label.text()
+    assert "出厂默认" in dlg.validate_label.text()
+    assert dlg.save_btn.isEnabled()
+
+    # 修改为非法 JSON -> 校验失败、保存禁用
+    dlg.editor.setPlainText("{broken")
+    qapp.processEvents()
+    assert "语法错误" in dlg.validate_label.text()
+    assert not dlg.save_btn.isEnabled()
+
+    # 改回合法并保存 -> 容器收到写入命令
+    dlg.editor.setPlainText('{"bandwidth": {"threshold_gb": 4.0}}')
+    qapp.processEvents()
+    dlg._save()
+    deadline = _t.time() + 15
+    while dlg._quick_tasks and _t.time() < deadline:
+        qapp.processEvents(); _t.sleep(0.05)
+    qapp.processEvents()
+    cmds = [c.executed_command for inst in fake_ssh.instances
+            for c in inst.channels]
+    assert any("printf" in c and "/root/ucm-deploy/precheck.json" in c
+               and '"threshold_gb": 4.0' in c for c in cmds)
+
+    # 页面状态刷新为自定义已启用
+    page._refresh_config_status()
+    deadline = _t.time() + 15
+    while page._quick_tasks and _t.time() < deadline:
+        qapp.processEvents(); _t.sleep(0.05)
+    qapp.processEvents()
+    assert page._custom_config is True
+    assert "自定义配置已启用" in page.config_status_label.text()

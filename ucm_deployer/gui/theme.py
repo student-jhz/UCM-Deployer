@@ -7,9 +7,14 @@
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPixmap
+from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication
+
+# 勾选框对勾图片占位（apply_light_theme 时替换为实际生成路径）
+_CHECKMARK_PLACEHOLDER = "__UCM_CHECKMARK__"
 
 QSS = """
 /* —— 通配规则必须在窗口级背景规则之前（顺序陷阱，见模块 docstring）—— */
@@ -19,6 +24,20 @@ QMainWindow, QDialog { background: #f3f5f8; }
 #brandTitle { font-size: 17px; font-weight: 600; color: #1e293b; background: transparent; }
 #brandSub { color: #64748b; font-size: 12px; background: transparent; }
 
+/* 复选框：加大加亮的勾选指示器（默认 Fusion 样式小且不显眼） */
+QCheckBox { spacing: 8px; color: #1e293b; font-weight: 600; }
+QCheckBox::indicator {
+    width: 18px; height: 18px;
+    border: 2px solid #94a3b8; border-radius: 4px; background: #ffffff;
+}
+QCheckBox::indicator:hover { border-color: #2f6fed; }
+/* 选中：蓝色实心 + 对勾图片（图片缺失时自动回退为纯色块，仍醒目） */
+QCheckBox::indicator:checked {
+    background: #2f6fed; border-color: #2f6fed;
+    image: url(%s);
+}
+QCheckBox::indicator:disabled { border-color: #e2e8f0; background: #f1f5f9; }
+""" % _CHECKMARK_PLACEHOLDER + """
 QPushButton#navBtn {
     text-align: left; padding: 6px 12px; border: 1px solid transparent;
     border-radius: 6px; background: transparent; color: #334155; font-size: 13px;
@@ -137,6 +156,46 @@ def make_app_icon() -> QPixmap:
     return pm
 
 
+def ensure_checkmark_png() -> str:
+    """生成复选框对勾图片（白色，QSS 引用），返回文件路径；失败返回空串。
+
+    QSS 不支持内嵌图片，对勾以代码生成写入 ~/.ucm_deployer/theme/；
+    文件缺失或生成失败时 QSS 的 image 加载失败会自动回退为纯色块。
+    """
+    import sys
+
+    try:
+        base = Path.home() / ".ucm_deployer" / "theme"
+        base.mkdir(parents=True, exist_ok=True)
+        path = base / "checkmark-white.png"
+        if not path.is_file() or path.stat().st_size == 0:
+            pm = QPixmap(18, 18)
+            pm.fill(Qt.transparent)
+            p = QPainter(pm)
+            p.setRenderHint(QPainter.Antialiasing)
+            pen = QPen(QColor("#ffffff"), 3)
+            pen.setCapStyle(Qt.RoundCap)
+            pen.setJoinStyle(Qt.RoundJoin)
+            p.setPen(pen)
+            p.drawLine(4, 9, 8, 13)
+            p.drawLine(8, 13, 14, 5)
+            p.end()
+            if not pm.save(str(path), "PNG"):
+                return ""
+        return str(path).replace("\\", "/")
+    except Exception:
+        return ""
+
+
+def themed_qss() -> str:
+    """带对勾图片路径的 QSS（apply_light_theme 使用）。"""
+    url = ensure_checkmark_png()
+    if url:
+        return QSS.replace(_CHECKMARK_PLACEHOLDER, url)
+    # 无图片时移除 image 行，保留纯色块样式
+    return QSS.replace("    image: url(%s);\n" % _CHECKMARK_PLACEHOLDER, "")
+
+
 def apply_light_theme(app: QApplication) -> None:
     """浅色 QPalette + QSS（防系统深色模式下 Qt 自动切换深色调色板）。"""
     from PySide6.QtGui import QPalette
@@ -154,4 +213,4 @@ def apply_light_theme(app: QApplication) -> None:
     palette.setColor(QPalette.ToolTipBase, QColor("#1e293b"))
     palette.setColor(QPalette.ToolTipText, QColor("#ffffff"))
     app.setPalette(palette)
-    app.setStyleSheet(QSS)
+    app.setStyleSheet(themed_qss())

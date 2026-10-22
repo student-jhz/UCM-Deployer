@@ -1,6 +1,6 @@
 [project]
 name = "ucm-deployer"
-version = "0.3.0"
+version = "0.3.1"
 description = "UCM (Unified Cache Management) 一键部署工具：单服务器镜像构建与容器创建（vLLM / vLLM-Ascend / SGLang）"
 requires-python = ">=3.9"
 

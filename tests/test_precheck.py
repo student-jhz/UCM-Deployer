@@ -242,3 +242,96 @@ def test_run_mkdir_failure_raises(fake_ssh):
     ssh._client.add(r"mkdir -p ", stderr="Permission denied", exit_code=1)
     with pytest.raises(PrecheckError, match="创建预检临时目录失败"):
         PrecheckRunner(ssh).run("ucm-ctr", mount_path="/mnt/kv")
+
+
+# ============================================================ 配置文件
+def test_locate_default_config(fake_ssh):
+    ssh = make_ssh(fake_ssh)
+    ssh._client.add(
+        r"python3 -c ",
+        stdout="/usr/local/lib/python3.10/site-packages/ucm_toolkit/tools/"
+               "precheck/precheck.defaults.json\n")
+    path = PrecheckRunner(ssh).locate_default_config("ucm-ctr")
+    assert path.endswith("ucm_toolkit/tools/precheck/precheck.defaults.json")
+    cmd = ssh._client.channels[-1].executed_command
+    assert cmd.startswith("docker exec ucm-ctr /bin/bash -c ")
+    assert "import ucm_toolkit" in cmd
+
+
+def test_locate_default_config_failure(fake_ssh):
+    ssh = make_ssh(fake_ssh)
+    ssh._client.add(r"python3 -c ", stderr="No module named ucm_toolkit",
+                    exit_code=1)
+    assert PrecheckRunner(ssh).locate_default_config("ucm-ctr") == ""
+
+
+def test_read_default_config(fake_ssh):
+    ssh = make_ssh(fake_ssh)
+    ssh._client.add(r"python3 -c ",
+                    stdout="/site/ucm_toolkit/tools/precheck/"
+                           "precheck.defaults.json\n")
+    ssh._client.add(r"cat /site/", stdout='{"kernel_min": "5.10"}\n')
+    text = PrecheckRunner(ssh).read_default_config("ucm-ctr")
+    assert '"kernel_min"' in text
+    cat_cmd = ssh._client.channels[-1].executed_command
+    assert "cat " in cat_cmd and "precheck.defaults.json" in cat_cmd
+
+
+def test_read_default_config_not_installed(fake_ssh):
+    ssh = make_ssh(fake_ssh)
+    ssh._client.add(r"python3 -c ", exit_code=1)
+    with pytest.raises(PrecheckError, match="定位"):
+        PrecheckRunner(ssh).read_default_config("ucm-ctr")
+
+
+def test_save_config_valid(fake_ssh):
+    import json as _json
+
+    ssh = make_ssh(fake_ssh)
+    ssh._client.add(r"mkdir -p /root/ucm-deploy", stdout="")
+    payload = _json.dumps({"bandwidth": {"threshold_gb": 4.0}})
+    PrecheckRunner(ssh).save_config("ucm-ctr", payload)
+    cmd = ssh._client.channels[-1].executed_command
+    assert "mkdir -p /root/ucm-deploy" in cmd
+    assert "printf" in cmd and "%s" in cmd     # %s 经 shq 转义为 '\''%s'\''
+    assert "/root/ucm-deploy/precheck.json" in cmd
+    assert payload in cmd        # JSON 内容原样进入容器内文件
+
+
+def test_save_config_invalid_json_rejected(fake_ssh):
+    ssh = make_ssh(fake_ssh)
+    with pytest.raises(PrecheckError, match="不是合法 JSON"):
+        PrecheckRunner(ssh).save_config("ucm-ctr", "{broken")
+    assert not [c for c in ssh._client.channels if "printf" in c.executed_command]
+
+
+def test_config_exists_and_remove(fake_ssh):
+    ssh = make_ssh(fake_ssh)
+    runner = PrecheckRunner(ssh)
+    ssh._client.add(r"test -f /root/ucm-deploy/precheck.json", stdout="",
+                    exit_code=1)
+    assert not runner.config_exists("ucm-ctr")
+    assert runner.remove_config("ucm-ctr") is False    # 不存在 -> 无需删
+
+    ssh._client.add(r"test -f /root/ucm-deploy/precheck.json", stdout="")
+    ssh._client.add(r"rm -f /root/ucm-deploy/precheck.json", stdout="")
+    assert runner.config_exists("ucm-ctr")
+    assert runner.remove_config("ucm-ctr") is True
+
+
+def test_run_with_config_path(fake_ssh):
+    """--config 引用容器内自定义配置；文件缺失时报错。"""
+    ssh = make_ssh(fake_ssh)
+    ssh._client.add(r"test -f /root/ucm-deploy/precheck.json", exit_code=1)
+    with pytest.raises(PrecheckError, match="自定义预检配置在容器内不存在"):
+        PrecheckRunner(ssh).run("ucm-ctr", config_path="/root/ucm-deploy/precheck.json")
+
+    ssh._client.add(r"test -f /root/ucm-deploy/precheck.json", stdout="")
+    ssh._client.add(r"ucm-toolkit run precheck", stdout="[PASS] kernel  5.10.0\n")
+    result = PrecheckRunner(ssh).run(
+        "ucm-ctr", mount_path="", skip_bandwidth=True,
+        config_path="/root/ucm-deploy/precheck.json")
+    assert result.ok
+    cmd = ssh._client.channels[-1].executed_command
+    assert "--config /root/ucm-deploy/precheck.json" in cmd
+    assert "--skip-bandwidth" in cmd
