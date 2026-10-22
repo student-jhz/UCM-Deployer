@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="UCM Deployer 使用文档 - 从服务器登录、镜像构建、容器创建到环境预检的一站式推理容器部署指南">
+<meta name="theme-color" content="#2563eb">
+<title>UCM Deployer 使用文档</title>
+<style>
+:root {
+  --primary: #2563eb;
+  --primary-dark: #1d4ed8;
+  --primary-light: #eff6ff;
+  --bg: #f8fafc;
+  --card: #ffffff;
+  --border: #e2e8f0;
+  --text: #1e293b;
+  --muted: #64748b;
+  --success: #16a34a;
+  --warning: #d97706;
+  --danger: #dc2626;
+  --code-bg: #0f172a;
+  --code-fg: #e2e8f0;
+  --sidebar-width: 250px;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.75;
+}
+a { color: var(--primary); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, pre { font-family: Consolas, "Cascadia Mono", "Courier New", monospace; }
+code {
+  font-size: 13px;
+  color: #4338ca;
+  background: #eef2ff;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+pre {
+  color: var(--code-fg);
+  background: var(--code-bg);
+  padding: 16px 20px;
+  border-radius: 8px;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 14px 0;
+}
+pre code { color: inherit; background: transparent; padding: 0; }
+
+.sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: var(--sidebar-width);
+  background: var(--card);
+  border-right: 1px solid var(--border);
+  padding: 24px 0;
+  overflow-y: auto;
+  z-index: 100;
+}
+.sidebar .logo {
+  padding: 0 24px 18px;
+  color: var(--primary);
+  font-size: 19px;
+  font-weight: 750;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 14px;
+}
+.sidebar .logo small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+.sidebar nav { padding: 0 12px; }
+.nav-group {
+  padding: 14px 12px 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+.nav-link {
+  display: block;
+  margin: 1px 0;
+  padding: 7px 12px;
+  color: var(--text);
+  border-radius: 6px;
+  font-size: 13.5px;
+}
+.nav-link:hover { background: var(--primary-light); text-decoration: none; }
+.nav-link.active { background: var(--primary); color: #fff; font-weight: 650; }
+.nav-link .num { display: inline-block; width: 20px; color: var(--muted); font-weight: 750; }
+.nav-link.active .num { color: #bfdbfe; }
+
+.main { margin-left: var(--sidebar-width); }
+.hero {
+  color: #fff;
+  text-align: center;
+  padding: 72px 40px 64px;
+  background: linear-gradient(135deg, #172554 0%, #1d4ed8 50%, #38bdf8 100%);
+}
+.hero h1 { font-size: 40px; margin-bottom: 16px; }
+.hero .lead {
+  max-width: 760px;
+  margin: 0 auto 28px;
+  color: rgba(255,255,255,.92);
+  font-size: 17px;
+}
+.hero .actions { display: flex; justify-content: center; gap: 14px; flex-wrap: wrap; }
+.btn {
+  display: inline-block;
+  padding: 11px 26px;
+  border-radius: 8px;
+  font-size: 15px;
+  font-weight: 650;
+  transition: .15s;
+}
+.btn-primary { color: var(--primary-dark); background: #fff; }
+.btn-primary:hover { background: #dbeafe; text-decoration: none; }
+.btn-outline { color: #fff; border: 1.5px solid rgba(255,255,255,.72); }
+.btn-outline:hover { background: rgba(255,255,255,.12); text-decoration: none; }
+.hero .meta { margin-top: 26px; color: rgba(255,255,255,.76); font-size: 13px; }
+
+.container { max-width: 920px; margin: 0 auto; padding: 0 40px 80px; }
+section { padding: 38px 0 10px; border-bottom: 1px solid var(--border); scroll-margin-top: 20px; }
+section:last-of-type { border-bottom: 0; }
+h1 { font-size: 32px; margin-bottom: 12px; }
+h2 { font-size: 25px; margin: 8px 0 16px; }
+h3 { font-size: 18px; margin: 22px 0 10px; }
+p { margin: 10px 0; }
+ul, ol { margin: 10px 0; padding-left: 24px; }
+li { margin: 5px 0; }
+.muted { color: var(--muted); }
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px 24px;
+  margin: 16px 0;
+  box-shadow: 0 1px 2px rgba(15,23,42,.04);
+}
+.cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin: 18px 0; }
+.cards .card { margin: 0; }
+.cards h3 { margin-top: 0; font-size: 16px; }
+.flow { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 20px 0; }
+.flow .step {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--primary);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+.flow .step strong { display: block; color: var(--primary); margin-bottom: 5px; }
+.step-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 4px 14px;
+  color: #fff;
+  background: var(--primary);
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 750;
+}
+.figure { margin: 22px 0; }
+.figure img {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 4px 18px rgba(15,23,42,.08);
+  background: #fff;
+}
+.figure figcaption { margin-top: 10px; color: var(--muted); text-align: center; font-size: 13px; }
+
+table {
+  width: 100%;
+  margin: 14px 0;
+  border-collapse: collapse;
+  background: var(--card);
+  border-radius: 8px;
+  overflow: hidden;
+  font-size: 14px;
+}
+th, td { padding: 10px 12px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+th { background: #f1f5f9; color: #334155; font-weight: 700; }
+tr:last-child td { border-bottom: 0; }
+.callout { margin: 16px 0; padding: 14px 18px; border-left: 4px solid var(--primary); background: var(--primary-light); border-radius: 6px; }
+.callout.warn { border-left-color: var(--warning); background: #fffbeb; }
+.callout.danger { border-left-color: var(--danger); background: #fef2f2; }
+.callout b { display: block; margin-bottom: 3px; }
+.status { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+.status.pass { color: #166534; background: #dcfce7; }
+.status.warn { color: #92400e; background: #fef3c7; }
+.status.fail { color: #991b1b; background: #fee2e2; }
+.status.info { color: #334155; background: #e2e8f0; }
+
+details {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin: 8px 0;
+}
+details summary { cursor: pointer; color: #1e3a8a; font-weight: 650; }
+details[open] summary { margin-bottom: 6px; }
+
+footer {
+  padding: 28px 40px;
+  color: var(--muted);
+  text-align: center;
+  border-top: 1px solid var(--border);
+  background: #fff;
+}
+
+@media (max-width: 960px) {
+  .sidebar {
+    position: sticky;
+    top: 0;
+    width: 100%;
+    height: auto;
+    padding: 12px 0;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .sidebar .logo { padding: 0 18px 10px; margin: 0; border-bottom: 0; }
+  .sidebar nav { display: flex; overflow-x: auto; padding: 0 12px; }
+  .nav-group { display: none; }
+  .nav-link { white-space: nowrap; }
+  .main { margin-left: 0; }
+  .hero { padding: 48px 20px 42px; }
+  .hero h1 { font-size: 30px; }
+  .container { padding: 0 20px 60px; }
+  .cards, .flow { grid-template-columns: 1fr; }
+  section { padding-top: 28px; }
+  footer { padding: 22px 20px; }
+}
+</style>
+</head>
+<body>
+<aside class="sidebar">
+  <div class="logo">UCM Deployer<small>统一缓存管理部署工具</small></div>
+  <nav>
+    <div class="nav-group">开始</div>
+    <a class="nav-link" href="#intro">工具简介</a>
+    <a class="nav-link" href="#quickstart">快速开始</a>
+    <div class="nav-group">部署流程</div>
+    <a class="nav-link" href="#step1"><span class="num">1</span>服务器管理</a>
+    <a class="nav-link" href="#step2"><span class="num">2</span>镜像构建</a>
+    <a class="nav-link" href="#step3"><span class="num">3</span>容器创建</a>
+    <a class="nav-link" href="#step4"><span class="num">4</span>环境预检</a>
+    <div class="nav-group">进阶</div>
+    <a class="nav-link" href="#precheck-config">预检参数配置</a>
+    <a class="nav-link" href="#tools">容器与镜像清理</a>
+    <a class="nav-link" href="#faq">常见问题</a>
+    <a class="nav-link" href="#download">下载与资源</a>
+  </nav>
+</aside>
+
+<div class="main">
+<header class="hero">
+  <h1>UCM Deployer</h1>
+  <p class="lead">面向 vLLM / vLLM-Ascend / SGLang 推理容器的 Windows 桌面部署工具。从 SSH 登录、UCM 镜像构建、加速卡容器创建，到环境预检与清理，一站式完成。</p>
+  <div class="actions">
+    <a class="btn btn-primary" href="#quickstart">快速开始</a>
+    <a class="btn btn-outline" href="https://github.com/student-jhz/UCM-Deployer/releases/latest">下载 EXE</a>
+  </div>
+  <p class="meta">支持 Ascend NPU · NVIDIA GPU · Linux 服务器 · Docker</p>
+</header>
+
+<div class="container">
+<section id="intro">
+  <h2>工具简介</h2>
+  <p>UCM Deployer 是 Unified Cache Management（UCM）的一键部署工具。它把原本需要手工执行的 SSH 命令、离线 whl 安装、Dockerfile 构建、<code>docker run</code> 参数拼装和容器内环境检查，收敛为四个可视化步骤。</p>
+  <div class="flow">
+    <div class="step"><strong>① 服务器管理</strong>SSH 登录与设备探测</div>
+    <div class="step"><strong>② 镜像构建</strong>离线安装 UCM 组件</div>
+    <div class="step"><strong>③ 容器创建</strong>映射加速卡与目录</div>
+    <div class="step"><strong>④ 环境预检</strong>驱动 / 内核 / 带宽检查</div>
+  </div>
+  <div class="cards">
+    <div class="card"><h3>凭据复用</h3><p>密码或私钥登录，密码 Fernet 加密保存在本机，下次打开自动复用。</p></div>
+    <div class="card"><h3>设备感知</h3><p>自动识别 Ascend / NVIDIA 型号、卡数与 CPU 架构，并贯穿构建与容器创建。</p></div>
+    <div class="card"><h3>离线构建</h3><p>上传 wrapt、UCM、ucm-toolkit whl，在服务器内生成带 UCM 的基础镜像。</p></div>
+    <div class="card"><h3>命令透明</h3><p>所有 Docker 命令先完整展示，允许编辑，再执行，避免黑盒操作。</p></div>
+    <div class="card"><h3>环境预检</h3><p>容器内检查驱动、内核、共享内存、AIO 与存储带宽，输出中文排查建议。</p></div>
+    <div class="card"><h3>运维善后</h3><p>按关键字筛选并清理容器或镜像，删除前展示完整对象列表。</p></div>
+  </div>
+  <figure class="figure">
+    <img src="screenshots/step1-servers.png" alt="UCM Deployer 服务器管理界面" loading="lazy">
+    <figcaption>服务器管理页：历史服务器、设备信息与当前登录对象一目了然</figcaption>
+  </figure>
+</section>
+
+<section id="quickstart">
+  <h2>快速开始</h2>
+  <h3>方式一：直接使用 EXE（推荐）</h3>
+  <p>从 <a href="https://github.com/student-jhz/UCM-Deployer/releases/latest">Releases</a> 下载最新的 <code>UCM-Deployer.exe</code>，双击即可运行，无需安装 Python。</p>
+  <pre><code>.\\UCM-Deployer.exe --smoke</code></pre>
+  <h3>方式二：从源码运行</h3>
+  <pre><code>git clone https://github.com/student-jhz/UCM-Deployer.git
+cd UCM-Deployer
+python -m venv .venv
+.venv\\Scripts\\pip install -r requirements-dev.txt
+.venv\\Scripts\\python -m pytest
+.venv\\Scripts\\python main.py</code></pre>
+  <h3>方式三：本地打包 EXE</h3>
+  <pre><code>powershell -ExecutionPolicy Bypass -File scripts\\build_exe.ps1</code></pre>
+  <div class="callout">
+    <b>目标服务器要求</b>
+    Linux + SSH + Docker；Ascend 服务器需宿主机可用 <code>npu-smi</code>；NVIDIA 服务器需 <code>nvidia-smi</code> 与 nvidia-container-runtime。
+  </div>
+  <h3>准备安装包</h3>
+  <table>
+    <thead><tr><th>包</th><th>必填</th><th>获取途径</th></tr></thead>
+    <tbody>
+      <tr><td>wrapt whl</td><td>是</td><td><a href="https://pypi.org/project/wrapt/1.17.2/#files">PyPI wrapt 1.17.2</a>，选择匹配 CPU 架构与 Python 版本</td></tr>
+      <tr><td>UCM whl</td><td>是</td><td><a href="https://github.com/ModelEngine-Group/unified-cache-management/releases">Unified Cache Management Releases</a></td></tr>
+      <tr><td>ucm-toolkit whl</td><td>预检需要</td><td>与 UCM 同站点发布</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="step1">
+  <span class="step-badge">步骤 1</span>
+  <h2>服务器管理</h2>
+  <p>登录要部署的服务器并探测设备信息。一次只登录一台服务器，后续所有操作都作用于当前勾选的服务器。</p>
+  <figure class="figure">
+    <img src="screenshots/step1-servers.png" alt="服务器管理界面" loading="lazy">
+    <figcaption>服务器列表包含登录状态、设备类型、型号、卡数、CPU 架构与备注</figcaption>
+  </figure>
+  <h3>操作流程</h3>
+  <ol>
+    <li>点击「➕ 添加服务器」，填写名称、地址、账号、认证方式与备注。</li>
+    <li>点击「🔌 测试连接」确认 SSH 可达。</li>
+    <li>点击「🔍 探测设备」，自动识别设备类型、型号、卡数与 CPU 架构。</li>
+    <li>勾选「登录」，选择本次部署目标。</li>
+  </ol>
+  <figure class="figure">
+    <img src="screenshots/dialog-add-server.png" alt="添加服务器对话框" loading="lazy">
+    <figcaption>支持密码或私钥认证；登录信息加密保存后可复用</figcaption>
+  </figure>
+  <table>
+    <thead><tr><th>探测项</th><th>来源</th><th>用途</th></tr></thead>
+    <tbody>
+      <tr><td>设备类型与型号</td><td><code>npu-smi info</code> / <code>nvidia-smi</code></td><td>匹配基础镜像平台，生成设备映射</td></tr>
+      <tr><td>卡数</td><td>设备探测结果</td><td>决定步骤 3 全量映射加速卡数量</td></tr>
+      <tr><td>CPU 架构</td><td><code>uname -m</code></td><td>校验 wrapt whl 的 x86_64 / aarch64 标记</td></tr>
+    </tbody>
+  </table>
+  <div class="callout warn">
+    <b>注意</b>
+    若探测不到设备，请确认宿主机已安装 <code>npu-smi</code> 或 <code>nvidia-smi</code>，且命令在 PATH 中可用。
+  </div>
+</section>
+
+<section id="step2">
+  <span class="step-badge">步骤 2</span>
+  <h2>镜像构建</h2>
+  <p>在已登录服务器上，把 wrapt、UCM 与可选的 ucm-toolkit 安装进基础镜像，生成带 UCM 的推理引擎镜像。</p>
+  <figure class="figure">
+    <img src="screenshots/step2-build.png" alt="镜像构建界面" loading="lazy">
+    <figcaption>镜像构建页：基础镜像选择、离线安装包、匹配校验与构建日志</figcaption>
+  </figure>
+  <h3>操作流程</h3>
+  <ol>
+    <li>选择基础镜像：镜像列表来自服务器 <code>docker images</code>，输入关键字即可筛选；没有可用镜像时可上传 tar / tar.gz 并自动 <code>docker load</code>。</li>
+    <li>选择安装包：wrapt 与 UCM 必填，ucm-toolkit 用于步骤 4 预检。</li>
+    <li>确认新镜像名：默认生成 <code>&lt;基础镜像名&gt;:ucm-&lt;UCM版本&gt;</code>，也可手动修改。</li>
+    <li>点击「🔍 校验匹配」，确认设备平台与 whl 架构匹配。</li>
+    <li>点击「🔨 开始构建」，上传安装包并执行 <code>docker build</code>。</li>
+  </ol>
+  <table>
+    <thead><tr><th>校验项</th><th>规则</th><th>失败处理</th></tr></thead>
+    <tbody>
+      <tr><td>设备平台</td><td>NPU 对应 ascend 镜像，GPU 对应 nvidia / CUDA 镜像</td><td>拒绝构建并提示更换镜像</td></tr>
+      <tr><td>whl 架构</td><td>文件名中的 <code>x86_64</code> / <code>aarch64</code> 需与服务器 CPU 架构一致</td><td>拒绝构建并标出不匹配包</td></tr>
+      <tr><td>UCM 安装结果</td><td>构建完成后在镜像内执行包检测</td><td>构建失败并展示完整日志</td></tr>
+    </tbody>
+  </table>
+  <div class="callout">
+    <b>离线安装顺序</b>
+    工具生成 Dockerfile 时先安装 wrapt，再安装 UCM 与 ucm-toolkit，避免 UCM 依赖解析失败。
+  </div>
+</section>
+
+<section id="step3">
+  <span class="step-badge">步骤 3</span>
+  <h2>容器创建</h2>
+  <p>基于步骤 2 生成的 UCM 镜像创建推理容器。工具会根据设备卡数全量映射加速卡，并生成可编辑的 <code>docker run</code> 命令。</p>
+  <figure class="figure">
+    <img src="screenshots/step3-container.png" alt="容器创建界面" loading="lazy">
+    <figcaption>容器创建页：镜像校验、容器参数、挂载配置与命令预览</figcaption>
+  </figure>
+  <h3>选择镜像</h3>
+  <p>进入页面后自动加载镜像列表。选择镜像时会后台校验 UCM 是否安装：已安装则显示版本；未安装则提示回步骤 2 构建或更换镜像。</p>
+  <h3>容器参数</h3>
+  <table>
+    <thead><tr><th>参数</th><th>默认值</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>容器名</td><td><code>ucm-vllm</code></td><td>同名容器已存在时会提示处理</td></tr>
+      <tr><td>共享内存</td><td><code>--shm-size 512g</code></td><td>满足 UCM KV-cache 页缓存要求</td></tr>
+      <tr><td>网络</td><td>NPU：<code>--net=host</code><br>GPU：<code>-p 8000:8000</code></td><td>按设备平台自动生成</td></tr>
+    </tbody>
+  </table>
+  <h3>挂载配置</h3>
+  <ul>
+    <li><strong>KV Cache 目录</strong>：可添加多个，支持容器内 / 宿主机目录浏览，并可检查文件系统类型。</li>
+    <li><strong>模型路径</strong>：宿主机路径挂载到容器内 <code>/models</code>，默认只读。</li>
+    <li><strong>自定义挂载</strong>：任意宿主机与容器路径映射，可选择只读。</li>
+  </ul>
+  <figure class="figure">
+    <img src="screenshots/dialog-remote-dirs.png" alt="远程目录浏览对话框" loading="lazy">
+    <figcaption>目录浏览器用于选择 KV Cache 与模型挂载路径</figcaption>
+  </figure>
+  <h3>命令示例</h3>
+  <pre><code># Ascend NPU：全量映射 davinci 设备与驱动
+docker run -itd \\
+  --name ucm-vllm \\
+  --net=host --shm-size 512g \\
+  --device /dev/davinci0 --device /dev/davinci1 \\
+  --device /dev/davinci_manager --device /dev/devmm_svm --device /dev/hisi_hdc \\
+  -v /usr/local/dcmi:/usr/local/dcmi \\
+  -v /usr/local/Ascend/driver/lib64/:/usr/local/Ascend/driver/lib64/ \\
+  -v /mnt/kvcache:/mnt/kvcache \\
+  -v /data/models/Qwen3-32B:/models:ro \\
+  vllm-ascend-ucm:v0.26.0rc1 bash
+
+# NVIDIA GPU：使用 nvidia-container-runtime
+docker run -itd \\
+  --name ucm-vllm \\
+  --runtime nvidia --gpus all \\
+  -p 8000:8000 --ipc=host --shm-size 512g \\
+  -v /mnt/kvcache:/mnt/kvcache \\
+  -v /data/models:/models:ro \\
+  vllm-openai-ucm:latest bash</code></pre>
+  <div class="callout">
+    <b>先编辑，再执行</b>
+    生成的命令完整展示在编辑框中。你可以按环境需要修改参数，点击「🚀 创建容器」后按编辑框内容执行。
+  </div>
+</section>
+
+<section id="step4">
+  <span class="step-badge">步骤 4</span>
+  <h2>环境预检</h2>
+  <p>在已创建容器内运行 <code>ucm-toolkit run precheck</code>，提前发现可能影响 UCM 启动或缓存读写的问题。</p>
+  <figure class="figure">
+    <img src="screenshots/step4-precheck.png" alt="环境预检界面" loading="lazy">
+    <figcaption>预检结果以表格与详情联动展示，包含状态、阈值与中文排查建议</figcaption>
+  </figure>
+  <h3>检查模式</h3>
+  <table>
+    <thead><tr><th>模式</th><th>行为</th><th>适用场景</th></tr></thead>
+    <tbody>
+      <tr><td>环境检查 + 带宽测试</td><td>在指定挂载目录创建临时子目录，执行读写负载后自动清理</td><td>验证 KV Cache 存储路径实际吞吐</td></tr>
+      <tr><td>仅环境检查</td><td>追加 <code>--skip-bandwidth</code>，检查驱动、内核、共享内存与 AIO</td><td>快速排查基础环境</td></tr>
+    </tbody>
+  </table>
+  <div class="callout warn">
+    <b>挂载目录必须是容器内路径</b>
+    自填路径会在预检前校验存在性；目录不存在时直接拦截，避免误测容器写层。
+  </div>
+  <h3>结果解读</h3>
+  <table>
+    <thead><tr><th>状态</th><th>含义</th><th>建议</th></tr></thead>
+    <tbody>
+      <tr><td><span class="status pass">PASS</span></td><td>检查通过</td><td>可继续部署</td></tr>
+      <tr><td><span class="status warn">WARN</span></td><td>存在警告，不阻塞</td><td>查看详情与建议，评估是否影响业务</td></tr>
+      <tr><td><span class="status fail">FAIL</span></td><td>关键项失败</td><td>按建议修复后重新预检</td></tr>
+      <tr><td><span class="status info">INFO</span></td><td>信息项或跳过项</td><td>用于留档与人工确认</td></tr>
+    </tbody>
+  </table>
+  <table>
+    <thead><tr><th>检查项</th><th>默认规则</th></tr></thead>
+    <tbody>
+      <tr><td>内核版本</td><td>≥ 5.10</td></tr>
+      <tr><td>共享内存 /dev/shm</td><td>≥ 512 GiB，低于阈值警告</td></tr>
+      <tr><td>Ascend HDK</td><td>&gt; 25.2.0，较低版本警告</td></tr>
+      <tr><td>存储带宽</td><td>最佳组合聚合带宽 &lt; 8 GB/s 时警告</td></tr>
+      <tr><td>AIO 资源</td><td>记录 <code>fs.aio-max-nr</code> 与占用，供带宽超时排查</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="precheck-config">
+  <h2>预检参数配置</h2>
+  <p>预检参数来自 ucm-toolkit 的 JSON 配置。步骤 4 的「⚙ 预检参数配置...」提供容器内查看、编辑、保存与恢复默认能力。</p>
+  <figure class="figure">
+    <img src="screenshots/dialog-precheck-config.png" alt="预检参数配置对话框" loading="lazy">
+    <figcaption>编辑器会实时校验 JSON 语法，保存后自动通过 --config 生效</figcaption>
+  </figure>
+  <table>
+    <thead><tr><th>配置</th><th>位置</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>出厂默认</td><td><code>&lt;site-packages&gt;/ucm_toolkit/tools/precheck/precheck.defaults.json</code></td><td>随 ucm-toolkit whl 安装</td></tr>
+      <tr><td>自定义配置</td><td>容器内 <code>/root/ucm-deploy/precheck.json</code></td><td>本工具保存，预检自动引用</td></tr>
+    </tbody>
+  </table>
+  <p>自定义配置叠加在出厂默认之上，只需写要覆盖的键。例如仅调整带宽阈值：</p>
+  <pre><code>{
+  "bandwidth": {
+    "threshold_gb": 4.0
+  }
+}</code></pre>
+  <h3>默认带宽矩阵</h3>
+  <p>2 档分片（180 KiB / 8 MiB）× 3 档并发（1 / 8 / 16）× 2 个引擎（psync / aio），共 12 个组合；每个组合执行 dump、load、mixed 三阶段。</p>
+</section>
+
+<section id="tools">
+  <h2>容器与镜像清理</h2>
+  <p>工具菜单提供部署流程之外的运维善后功能，作用于当前勾选登录的服务器。</p>
+  <figure class="figure">
+    <img src="screenshots/dialog-cleanup-containers.png" alt="清理容器对话框" loading="lazy">
+    <figcaption>容器列表包含运行中与已停止容器，关键字筛选不丢失勾选</figcaption>
+  </figure>
+  <figure class="figure">
+    <img src="screenshots/dialog-cleanup-images.png" alt="清理镜像对话框" loading="lazy">
+    <figcaption>长镜像名完整悬浮展示，删除前确认框列出全部对象</figcaption>
+  </figure>
+  <table>
+    <thead><tr><th>功能</th><th>命令</th><th>风险提示</th></tr></thead>
+    <tbody>
+      <tr><td>清理容器</td><td><code>docker rm -f</code></td><td>运行中的容器会被强制停止并删除</td></tr>
+      <tr><td>清理镜像</td><td><code>docker rmi -f</code></td><td>被运行中容器引用的镜像也会被强制删除</td></tr>
+      <tr><td>刷新列表</td><td>重新查询 <code>docker ps -a</code> / <code>docker images</code></td><td>不会删除任何对象</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="faq">
+  <h2>常见问题</h2>
+  <details open>
+    <summary>密码安全吗？</summary>
+    <p>密码使用 Fernet 对称加密保存在本地 <code>~/.ucm_deployer/servers.json</code>，密钥保存在同目录 <code>.secret.key</code>。密文被单独拷贝时无法直接还原明文。</p>
+  </details>
+  <details>
+    <summary>镜像构建时 wrapt 安装失败怎么办？</summary>
+    <p>确认 wrapt whl 的架构标记与服务器 CPU 架构一致：x86_64 服务器选择 manylinux x86_64 包，aarch64 服务器选择 manylinux aarch64 包。</p>
+  </details>
+  <details>
+    <summary>构建成功但提示未检测到 UCM？</summary>
+    <p>UCM 包名存在平台变体，例如 <code>uc-manager-cann910-a2</code>。工具按 <code>uc-manager*</code> 前缀检测；若仍失败，可手动执行 <code>docker run --rm &lt;镜像&gt; pip list | grep uc</code> 验证。</p>
+  </details>
+  <details>
+    <summary>提示镜像平台与设备不匹配？</summary>
+    <p>按镜像名推断的平台与服务器设备类型不一致。请更换匹配的基础镜像；自定义镜像名无法识别平台时会降级为警告。</p>
+  </details>
+  <details>
+    <summary>容器内 npu-smi 报 rc=172 / -8020？</summary>
+    <p>通常表示 NPU 正被其他进程或容器占用，宿主机 <code>npu-smi info</code> 仍可查看。该警告不影响推理与带宽检查，停用占用方后重试。</p>
+  </details>
+  <details>
+    <summary>带宽测试某组合超时？</summary>
+    <p>常见于 aio 引擎、高并发与慢存储组合。可通过预检参数配置调低 <code>combo_timeout</code>、减少 worker 数或提高 <code>fs.aio-max-nr</code>。</p>
+  </details>
+  <details>
+    <summary>日志在哪里？</summary>
+    <p>本地日志位于 <code>~/.ucm_deployer/logs/ucm_deployer.log</code>，也可通过菜单「帮助 → 打开日志目录」打开。</p>
+  </details>
+</section>
+
+<section id="download">
+  <h2>下载与资源</h2>
+  <div class="card">
+    <h3>推荐版本</h3>
+    <ul>
+      <li><a href="https://github.com/student-jhz/UCM-Deployer/releases/latest">最新稳定版 EXE</a>：适合正式部署。</li>
+      <li><a href="https://github.com/student-jhz/UCM-Deployer">源码仓库</a>：适合开发与二次定制。</li>
+      <li><a href="https://github.com/ModelEngine-Group/unified-cache-management">Unified Cache Management</a>：UCM 与 ucm-toolkit 发布地址。</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>反馈问题</h3>
+    <ul>
+      <li><a href="https://github.com/student-jhz/UCM-Deployer/issues">GitHub Issues</a></li>
+      <li>提交问题时请附上版本号、设备型号、报错截图或本地日志，便于快速定位。</li>
+    </ul>
+  </div>
+</section>
+<!-- MORE -->
+</div>
+</div>
+<footer>UCM Deployer 使用文档 · 由 GitHub Pages 自动部署</footer>
+<script>
+const navLinks = Array.from(document.querySelectorAll('.nav-link'));
+const sections = navLinks.map(link => document.querySelector(link.getAttribute('href'))).filter(Boolean);
+function updateActiveLink() {
+  const position = window.scrollY + 120;
+  let current = sections[0];
+  sections.forEach(section => { if (section.offsetTop <= position) current = section; });
+  navLinks.forEach(link => link.classList.toggle('active', link.getAttribute('href') === '#' + current.id));
+}
+window.addEventListener('scroll', updateActiveLink, { passive: true });
+window.addEventListener('resize', updateActiveLink);
+updateActiveLink();
+</script>
+</body>
+</html>

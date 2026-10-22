@@ -18,6 +18,29 @@ OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "docs" / "screenshots"
 OUT.mkdir(parents=True, exist_ok=True)
 
 
+def ensure_cjk_font(app):
+    from PySide6.QtGui import QFont, QFontDatabase
+
+    font_dir = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
+    candidates = [
+        font_dir / "msyh.ttc",
+        font_dir / "simhei.ttf",
+        Path("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"),
+        Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+    ]
+    for font_path in candidates:
+        if not font_path.is_file():
+            continue
+        font_id = QFontDatabase.addApplicationFont(str(font_path))
+        if font_id < 0:
+            continue
+        families = QFontDatabase.applicationFontFamilies(font_id)
+        if families:
+            app.setFont(QFont(families[0], 10))
+            return True
+    return False
+
+
 def main() -> int:
     import paramiko
 
@@ -32,6 +55,7 @@ def main() -> int:
     from ucm_deployer.gui.theme import apply_light_theme
 
     apply_light_theme(app)
+    ensure_cjk_font(app)
 
     # 静默弹窗（截图过程不阻塞）
     for name in ("information", "warning", "critical", "about"):
