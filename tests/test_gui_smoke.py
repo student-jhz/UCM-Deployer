@@ -649,6 +649,8 @@ def test_precheck_page_intercepts_and_labels(qapp, tmp_path):
     page._run()      # 未建容器 -> 提示（自动应答）后返回
     qapp.processEvents()
     assert page.result_table.rowCount() == 0
+    page._browse_mount()   # 未建容器时浏览 -> 提示后返回（不弹目录对话框）
+    qapp.processEvents()
 
     ctx.containers = {s.id: "ucm-vllm"}
     page.on_enter()
@@ -677,6 +679,7 @@ def test_precheck_page_runs_and_shows_result(qapp, tmp_path, fake_ssh):
     from ucm_deployer.gui.state import AppContext
     from ucm_deployer.gui.widgets.precheck_page import PrecheckPage
 
+    fake_ssh.add_default(r"test -d /mnt/kvcache", stdout="")
     fake_ssh.add_default(r"mkdir -p ", stdout="")
     fake_ssh.add_default(r"ucm-toolkit run precheck",
                          stdout=_PRECHECK_SAMPLE, exit_code=1)

@@ -29,7 +29,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...core.container_manager import ContainerManager
 from ...core.precheck import PrecheckRunner
 from ...core.ssh_client import SSHClient
 from ..state import AppContext
@@ -65,11 +64,11 @@ class PrecheckPage(QWidget):
         self.bandwidth_check.toggled.connect(self._on_bandwidth_toggled)
 
         self.mount_edit = QLineEdit()
-        self.mount_edit.setPlaceholderText("KV Cache 挂载目录（带宽测试在其下创建临时子目录）")
+        self.mount_edit.setPlaceholderText("容器内挂载目录（带宽测试在其下创建临时子目录）")
         self.mount_edit.setToolTip(
-            "KV Cache 挂载目录（容器内路径 = 宿主机路径）。\n"
-            "带宽检查将在该目录下创建临时子目录 ucm-precheck-* 执行读写负载，\n"
-            "预检结束后自动清理子目录；请确保目录有可用空间。")
+            "KV Cache 挂载目录（容器内路径，须为步骤3 已映射进容器的目录）。\n"
+            "「浏览」列出容器内可见的目录；带宽检查将在该目录下创建临时子目录\n"
+            "ucm-precheck-* 执行读写负载，预检结束后自动清理；请确保目录有可用空间。")
         mount_btn = QPushButton("浏览...")
         mount_btn.clicked.connect(self._browse_mount)
         self.mount_hint = QLabel(
@@ -166,14 +165,20 @@ class PrecheckPage(QWidget):
         if server is None:
             QMessageBox.information(self, "提示", "请先在步骤1勾选要登录的服务器")
             return
+        container = self.ctx.containers.get(server.id)
+        if not container:
+            QMessageBox.information(
+                self, "提示", "请先在步骤3创建容器，再选择容器内挂载目录。")
+            return
 
+        # 带宽测试在容器内执行：浏览的必须是容器内可见的目录
         def lister(path: str) -> List[str]:
             with SSHClient(server) as ssh:
-                return ContainerManager(ssh).list_host_dirs(path)
+                return PrecheckRunner(ssh).list_dirs(container, path)
 
         start = self.mount_edit.text().strip() or "/"
         dlg = RemoteDirDialog(self, lister, start=start,
-                              title="选择挂载目录（带宽测试）")
+                              title="选择挂载目录（容器内）")
         if dlg.exec() == QDialog.Accepted and dlg.selected_path():
             self.mount_edit.setText(dlg.selected_path())
 

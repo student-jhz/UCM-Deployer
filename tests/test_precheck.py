@@ -152,13 +152,36 @@ def test_run_env_only(fake_ssh):
     assert not any("mkdir -p" in c for c in cmds)
 
 
-def test_run_with_mount_creates_and_cleans_subdir(fake_ssh):
-    """指定挂载目录：在其下创建临时子目录执行带宽测试并清理（播报路径）。"""
+def test_list_dirs_uses_container_view(fake_ssh):
+    """目录浏览为容器内视角（docker exec find）。"""
     ssh = make_ssh(fake_ssh)
-    ssh._client.add(r"mkdir -p ", stdout="")                       # 建子目录
+    ssh._client.add(r"find /mnt -maxdepth 1", stdout="/mnt/a\n/mnt/b\n")
+    dirs = PrecheckRunner(ssh).list_dirs("ucm-ctr", "/mnt")
+    assert dirs == ["/mnt/a", "/mnt/b"]
+    cmd = ssh._client.channels[-1].executed_command
+    assert cmd.startswith("docker exec ucm-ctr /bin/bash -c ")
+    assert "find /mnt" in cmd
+
+
+def test_run_mount_not_in_container_rejected(fake_ssh):
+    """挂载目录容器内不存在：拒绝执行且不创建任何目录（防测错容器写层）。"""
+    ssh = make_ssh(fake_ssh)
+    ssh._client.add(r"test -d /mnt/kv", stderr="", exit_code=1)
+    with pytest.raises(PrecheckError, match="容器内不存在"):
+        PrecheckRunner(ssh).run("ucm-ctr", mount_path="/mnt/kv")
+    cmds = [c.executed_command for c in ssh._client.channels]
+    assert not any("mkdir" in c for c in cmds), "不存在时不得凭空创建目录"
+    assert not any("ucm-toolkit run precheck" in c for c in cmds)
+
+
+def test_run_with_mount_creates_and_cleans_subdir(fake_ssh):
+    """指定挂载目录（容器内已存在）：创建临时子目录执行带宽测试并清理（播报路径）。"""
+    ssh = make_ssh(fake_ssh)
+    ssh._client.add(r"test -d /mnt/kvcache", stdout="")          # 容器内存在
+    ssh._client.add(r"mkdir -p ", stdout="")                      # 建子目录
     ssh._client.add(r"ucm-toolkit run precheck",
                     stdout="[PASS] kernel  5.10.0\n[WARN] bandwidth  7.0\n")
-    ssh._client.add(r"rm -rf ", stdout="")                         # 清子目录
+    ssh._client.add(r"rm -rf ", stdout="")                        # 清子目录
     lines = []
     result = PrecheckRunner(ssh).run("ucm-ctr", mount_path="/mnt/kvcache",
                                      on_line=lines.append)
@@ -194,6 +217,7 @@ def test_run_no_mount_no_notify_lines(fake_ssh):
 def test_run_cleans_subdir_even_on_failure(fake_ssh):
     """precheck 失败（退出码 1）也要清理子目录。"""
     ssh = make_ssh(fake_ssh)
+    ssh._client.add(r"test -d /mnt/kv", stdout="")
     ssh._client.add(r"mkdir -p ", stdout="")
     ssh._client.add(r"ucm-toolkit run precheck", stdout="[FAIL] x  -\n",
                     exit_code=1)
@@ -214,6 +238,7 @@ def test_run_usage_error_raises(fake_ssh):
 
 def test_run_mkdir_failure_raises(fake_ssh):
     ssh = make_ssh(fake_ssh)
+    ssh._client.add(r"test -d /mnt/kv", stdout="")
     ssh._client.add(r"mkdir -p ", stderr="Permission denied", exit_code=1)
     with pytest.raises(PrecheckError, match="创建预检临时目录失败"):
         PrecheckRunner(ssh).run("ucm-ctr", mount_path="/mnt/kv")

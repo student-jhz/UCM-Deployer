@@ -140,6 +140,26 @@ class PrecheckRunner:
         return self.ssh.exec(f"docker exec {shq(container)} /bin/bash -c {shq(cmd)}",
                              timeout=timeout)
 
+    def list_dirs(self, container: str, path: str = "/") -> List[str]:
+        """列出容器内某目录下的子目录（GUI 目录浏览数据源，容器内视角）。"""
+        path = path.rstrip("/") or "/"
+        res = self._exec_in_container(
+            container,
+            f"find {shq(path)} -maxdepth 1 -mindepth 1 -type d 2>/dev/null"
+            " | sort | head -200")
+        if not res.ok:
+            return []
+        return [l.strip() for l in res.stdout.splitlines() if l.strip()]
+
+    def _ensure_dir_in_container(self, container: str, path: str) -> None:
+        """校验目录在容器内已存在（不存在则报错，绝不凭空创建）。"""
+        res = self._exec_in_container(container, f"test -d {shq(path)}")
+        if not res.ok:
+            raise PrecheckError(
+                f"挂载目录在容器内不存在: {path}\n"
+                "请确认步骤3 已把该目录映射进容器（带宽测试须在容器内可见的"
+                "挂载存储上执行）。")
+
     # ------------------------------------------------------------ API
     def run(self, container: str, mount_path: str = "",
             skip_bandwidth: bool = False, timeout: float = 3600,
@@ -155,6 +175,7 @@ class PrecheckRunner:
         arg = ""
         if mount_path:
             mount_path = mount_path.rstrip("/") or "/"
+            self._ensure_dir_in_container(container, mount_path)
             sub_dir = f"{mount_path}/ucm-precheck-{uuid.uuid4().hex[:8]}"
             res = self._exec_in_container(container, f"mkdir -p {shq(sub_dir)}")
             if not res.ok:
