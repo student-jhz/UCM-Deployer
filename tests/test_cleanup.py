@@ -151,6 +151,8 @@ def test_cleanup_dialog_loads_and_deletes_images(qapp, tmp_path, fake_ssh):
     assert dlg.table.rowCount() == 2
     assert dlg.table.item(0, 1).text() == "repo1:v1"
     assert dlg.table.item(0, 3).text() == "18GB"
+    # 悬浮显示完整镜像名（长名称截断时 tooltip 可见全文）
+    assert dlg.table.item(0, 1).toolTip() == "repo1:v1"
 
     from PySide6.QtCore import Qt
 
@@ -162,9 +164,52 @@ def test_cleanup_dialog_loads_and_deletes_images(qapp, tmp_path, fake_ssh):
                 for c in inst.channels
                 if c.executed_command.startswith("docker rmi -f")]
     assert rmi_cmds == ["docker rmi -f repo1:v1"]
-    # 删除后自动刷新（剩 1 个）
+    # 删除后自动刷新（剩 1 个），筛选计数随之更新
     assert dlg.table.rowCount() == 1
     assert dlg.table.item(0, 1).text() == "repo2:v2"
+    assert "共 1 条" in dlg.filter_count_label.text()
+
+
+def test_cleanup_dialog_keyword_filter(qapp, tmp_path, fake_ssh):
+    """关键字筛选：整行匹配、隐藏不匹配行、保留勾选、清空恢复、计数。"""
+    from PySide6.QtCore import Qt
+
+    from ucm_deployer.gui.widgets.cleanup_dialog import CleanupDialog
+
+    fake_ssh.add_default(
+        r"images --format",
+        stdout=("quay.io/ascend/vllm-ascend\tv0.23.0\tid1\t18GB\t2026-08-01\n"
+                "ucm-engine\tucm-0.8.0\tid2\t5GB\t2026-09-01\n"
+                "nginx\tlatest\tid3\t100MB\t2026-07-01\n"))
+
+    ctx = _make_ctx(tmp_path)
+    dlg = CleanupDialog(ctx, "image")
+    assert _wait_tasks(dlg, qapp)
+    assert dlg.table.rowCount() == 3
+    assert "共 3 条" in dlg.filter_count_label.text()
+
+    # 勾选第 1 行 -> 筛选后勾选保留
+    dlg.table.item(0, 0).setCheckState(Qt.Checked)
+
+    dlg.filter_edit.setText("ucm")     # 命中：ucm-engine（名称列）
+    qapp.processEvents()
+    assert not dlg.table.isRowHidden(1)      # ucm-engine 可见
+    assert dlg.table.isRowHidden(0), "vllm-ascend 行不含 ucm 应隐藏"
+    assert dlg.table.isRowHidden(2)          # nginx 隐藏
+    assert "当前" in dlg.filter_count_label.text()
+
+    # 按 ID 筛选（整行匹配：非名称列命中也显示）
+    dlg.filter_edit.setText("id3")
+    qapp.processEvents()
+    assert not dlg.table.isRowHidden(2)
+    assert dlg.table.isRowHidden(0) and dlg.table.isRowHidden(1)
+
+    # 清空恢复全部，勾选仍保留
+    dlg.filter_edit.setText("")
+    qapp.processEvents()
+    assert not any(dlg.table.isRowHidden(r) for r in range(3))
+    assert "共 3 条" in dlg.filter_count_label.text()
+    assert dlg.table.item(0, 0).checkState() == Qt.Checked
 
 
 def test_cleanup_dialog_no_selection_prompt(qapp, tmp_path, fake_ssh):

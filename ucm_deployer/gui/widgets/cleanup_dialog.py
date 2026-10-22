@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QTableWidget,
@@ -57,17 +58,24 @@ class CleanupDialog(QDialog):
         self.info_label.setProperty("role", "hint")
         self.info_label.setWordWrap(True)
 
+        # 筛选行：关键字过滤（整行所有列匹配，保留已勾选状态）
+        self.filter_edit = QLineEdit()
+        self.filter_edit.setPlaceholderText("输入关键字过滤列表（匹配名称/ID/状态等，不区分大小写）")
+        self.filter_edit.setClearButtonEnabled(True)
+        self.filter_edit.textChanged.connect(self._apply_filter)
+        self.filter_count_label = QLabel("")
+        self.filter_count_label.setProperty("role", "hint")
+
         self.table = QTableWidget(0, len(headers))
         self.table.setHorizontalHeaderLabels(headers)
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        for col in range(1, len(headers)):
+        # 全列按内容自适应宽度：长镜像名完整可见，窗口不够宽时出横向滚动条
+        for col in range(len(headers)):
             header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
-        self.table.setMinimumSize(720, 380)
+        self.table.setMinimumSize(860, 420)
 
         self.refresh_btn = QPushButton("🔄 刷新列表")
         self.del_btn = QPushButton("🗑 删除选中")
@@ -85,6 +93,11 @@ class CleanupDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.tip_label)
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(QLabel("筛选"), 0)
+        filter_row.addWidget(self.filter_edit, 1)
+        filter_row.addWidget(self.filter_count_label, 0)
+        layout.addLayout(filter_row)
         layout.addWidget(self.table, 1)
         layout.addWidget(self.info_label)
         layout.addLayout(btns)
@@ -145,21 +158,57 @@ class CleanupDialog(QDialog):
             check.setCheckState(Qt.Unchecked)
             self.table.setItem(row, 0, check)
             if self.mode == _MODE_CONTAINER:
-                self.table.setItem(row, 1, QTableWidgetItem(str(item.get("names", ""))))
-                self.table.setItem(row, 2, QTableWidgetItem(str(item.get("image", ""))))
-                self.table.setItem(row, 3, QTableWidgetItem(str(item.get("status", ""))))
-                self.table.setItem(row, 4, QTableWidgetItem(str(item.get("id", ""))))
+                self._set_text_item(row, 1, str(item.get("names", "")))
+                self._set_text_item(row, 2, str(item.get("image", "")))
+                self._set_text_item(row, 3, str(item.get("status", "")))
+                self._set_text_item(row, 4, str(item.get("id", "")))
                 self._rows[row] = item
             else:
                 ref = item.ref if hasattr(item, "ref") else str(item)
                 size = item.size if hasattr(item, "size") else ""
                 image_id = item.image_id if hasattr(item, "image_id") else ""
                 created = item.created if hasattr(item, "created") else ""
-                self.table.setItem(row, 1, QTableWidgetItem(ref))
-                self.table.setItem(row, 2, QTableWidgetItem(image_id))
-                self.table.setItem(row, 3, QTableWidgetItem(size))
-                self.table.setItem(row, 4, QTableWidgetItem(created))
+                self._set_text_item(row, 1, ref)
+                self._set_text_item(row, 2, image_id)
+                self._set_text_item(row, 3, size)
+                self._set_text_item(row, 4, created)
                 self._rows[row] = {"ref": ref}
+        self.table.resizeColumnsToContents()
+        self._apply_filter()
+
+    def _set_text_item(self, row: int, col: int, text: str) -> None:
+        """填单元格并悬浮显示全文（长镜像名被截断时 tooltip 可见全名）。"""
+        item = QTableWidgetItem(text)
+        if text:
+            item.setToolTip(text)
+        self.table.setItem(row, col, item)
+
+    # ------------------------------------------------------------ 筛选
+    def _apply_filter(self, *_) -> None:
+        """按关键字过滤行（整行所有列不区分大小写包含匹配，保留勾选）。"""
+        keyword = self.filter_edit.text().strip().lower()
+        total = self.table.rowCount()
+        visible = 0
+        for row in range(total):
+            if not keyword:
+                self.table.setRowHidden(row, False)
+                visible += 1
+                continue
+            matched = False
+            for col in range(1, self.table.columnCount()):
+                it = self.table.item(row, col)
+                if it is not None and keyword in it.text().lower():
+                    matched = True
+                    break
+            self.table.setRowHidden(row, not matched)
+            if matched:
+                visible += 1
+        if total == 0:
+            self.filter_count_label.setText("")
+        elif keyword:
+            self.filter_count_label.setText(f"当前 {visible}/{total} 条")
+        else:
+            self.filter_count_label.setText(f"共 {total} 条")
 
     # ------------------------------------------------------------ 删除
     def _selected_refs(self) -> List[str]:
