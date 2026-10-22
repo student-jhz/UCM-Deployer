@@ -2,6 +2,8 @@
 
 **UCM (Unified Cache Management) 一键部署工具 —— Windows 桌面版**
 
+:book: **[在线使用文档（含界面截图）](https://student-jhz.github.io/UCM-Deployer/)**
+
 面向 vLLM / vLLM-Ascend / SGLang 推理容器（Ascend NPU / NVIDIA GPU），把 UCM 的部署简化为四个向导步骤：
 
 ```

@@ -1,0 +1,52 @@
+site_name: UCM Deployer 使用文档
+site_description: UCM (Unified Cache Management) 一键部署工具 —— vLLM / vLLM-Ascend / SGLang 推理容器部署指南
+site_url: https://student-jhz.github.io/UCM-Deployer/
+repo_url: https://github.com/student-jhz/UCM-Deployer
+repo_name: student-jhz/UCM-Deployer
+
+theme:
+  name: material
+  language: zh
+  features:
+    - navigation.tabs
+    - navigation.top
+    - navigation.sections
+    - toc.follow
+    - content.code.copy
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      toggle:
+        icon: material/weather-night
+        name: 切换到深色模式
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: 切换到浅色模式
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight
+  - tables
+  - attr_list
+  - md_in_html
+
+not_in_nav: |
+  用户手册.md
+
+nav:
+  - 首页: index.md
+  - 安装与启动: guide/install.md
+  - 步骤1 · 服务器管理: guide/step1.md
+  - 步骤2 · 镜像构建: guide/step2.md
+  - 步骤3 · 容器创建: guide/step3.md
+  - 步骤4 · 环境预检: guide/step4.md
+  - 预检参数配置: guide/precheck-config.md
+  - 工具菜单 · 清理容器/镜像: guide/tools.md
+  - 常见问题: guide/faq.md
+  - 架构设计: architecture.md
