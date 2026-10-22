@@ -36,7 +36,7 @@ markdown_extensions:
   - attr_list
   - md_in_html
 
-not_in_nav: |
+exclude_docs: |
   用户手册.md
 
 nav:
