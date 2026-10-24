@@ -548,6 +548,10 @@ def test_container_page_command_gen(qapp, tmp_path):
     ctx.images = {s1.id: "img:t1"}
 
     page = ContainerPage(ctx)
+    page._ascend_devices = [
+        f"/dev/davinci{i}" for i in range(8)
+    ] + ["/dev/davinci_manager", "/dev/devmm_svm", "/dev/hisi_hdc"]
+    page._ascend_mounts = [("/usr/local/Ascend/driver", "/usr/local/Ascend/driver")]
     # 排版回归：不再使用滚动容器（内容须一屏可见）
     assert page.findChild(QScrollArea) is None
     fill_image_combo(page.image_combo, [DockerImage("img", "t1", "i", "1GB")],
@@ -560,6 +564,19 @@ def test_container_page_command_gen(qapp, tmp_path):
     assert "--device /dev/davinci7" in cmd          # 8 卡全量映射
     assert "--device /dev/davinci_manager" in cmd
     assert "--net=host" in cmd
+
+    # Ascend 950PR 等新型号：仅映射服务器实际存在的设备节点
+    page._ascend_devices = [
+        "/dev/davinci0", "/dev/davinci1", "/dev/davinci2",
+        "/dev/davinci3", "/dev/davinci4", "/dev/davinci5",
+        "/dev/davinci6", "/dev/davinci7", "/dev/davinci_manager",
+        "/dev/hisi_hdc",
+    ]
+    page._regen()
+    qapp.processEvents()
+    cmd = page.command_text()
+    assert "--device /dev/hisi_hdc" in cmd
+    assert "/dev/devmm_svm" not in cmd
 
     # 命令可直接编辑，创建时按编辑框内容执行
     page.cmd_edit.setPlainText("docker run -itd --name edited img:t1 bash")
@@ -594,6 +611,10 @@ def test_container_page_kv_and_mounts(qapp, tmp_path):
     ctx.images = {s1.id: "img:t1"}
 
     page = ContainerPage(ctx)
+    page._ascend_devices = [
+        f"/dev/davinci{i}" for i in range(8)
+    ] + ["/dev/davinci_manager", "/dev/devmm_svm", "/dev/hisi_hdc"]
+    page._ascend_mounts = [("/usr/local/Ascend/driver", "/usr/local/Ascend/driver")]
     fill_image_combo(page.image_combo, [DockerImage("img", "t1", "i", "1GB")],
                      current="img:t1")
 

@@ -6,7 +6,7 @@
 """
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
@@ -83,6 +83,9 @@ class ContainerPage(QWidget):
         self._images = []
         self._ucm_state: Dict[str, UCMInfo] = {}   # 镜像 ref -> UCM 校验结果
         self._quick_tasks = []                      # 运行中的 QuickTask 引用
+        self._ascend_devices: Optional[List[str]] = None
+        self._ascend_mounts: Optional[List[tuple]] = None
+        self._ascend_devices_loading = False
 
         # ---------- 1. UCM 镜像与容器参数（紧凑：两行）
         top_box = QGroupBox("1. UCM 镜像与容器参数")
@@ -100,6 +103,9 @@ class ContainerPage(QWidget):
             "已有安装 UCM 的容器时，可跳过本页创建操作，直接进入步骤4选择该容器预检。")
         self.reuse_hint.setProperty("role", "hint")
         self.reuse_hint.setWordWrap(True)
+        self.ascend_device_label = QLabel("Ascend 设备节点：将按服务器实际存在情况自动映射")
+        self.ascend_device_label.setProperty("role", "hint")
+        self.ascend_device_label.setWordWrap(True)
 
         self.name_edit = QLineEdit("ucm-vllm")
         self.shm_edit = QLineEdit("512g")
@@ -124,6 +130,7 @@ class ContainerPage(QWidget):
         top_layout.addLayout(img_row)
         top_layout.addWidget(self.ucm_check_label)
         top_layout.addWidget(self.reuse_hint)
+        top_layout.addWidget(self.ascend_device_label)
         top_layout.addLayout(params_row)
 
         # ---------- 2. 挂载（KV Cache / 模型 / 自定义，合并一个分组）
@@ -228,13 +235,67 @@ class ContainerPage(QWidget):
         server = self.ctx.server
         if server is None:
             self._images = []
+            self._ascend_devices = []
+            self._ascend_mounts = []
+            self._ascend_devices_loading = False
+            self.ascend_device_label.setText("Ascend 设备节点：未登录服务器")
             fill_image_combo(self.image_combo, [])
             self.ucm_check_label.setText("镜像 UCM：未登录服务器（请回步骤1勾选）")
             return
+        self._refresh_ascend_devices()
         self._refresh_images()
 
     def current_image(self) -> str:
         return combo_ref(self.image_combo)
+
+    def _refresh_ascend_devices(self, regenerate_when_done: bool = False) -> None:
+        server = self.ctx.server
+        device = self.ctx.device_of(server) if server else None
+        if server is None or device.device_type != DeviceType.ASCEND:
+            self._ascend_devices = []
+            self._ascend_mounts = []
+            self._ascend_devices_loading = False
+            self.ascend_device_label.setText(
+                "Ascend 设备节点：不适用" if server is not None
+                else "Ascend 设备节点：未登录服务器")
+            if regenerate_when_done:
+                self._regen()
+            return
+        if self._ascend_devices_loading:
+            return
+
+        self._ascend_devices_loading = True
+        self._ascend_devices = None
+        self._ascend_mounts = None
+        self.ascend_device_label.setText("Ascend 设备节点：正在探测实际 /dev 节点...")
+
+        def fn():
+            with SSHClient(server) as ssh:
+                manager = ContainerManager(ssh)
+                return manager.list_ascend_devices(), manager.list_ascend_mounts()
+
+        def on_done(resources, error):
+            self._ascend_devices_loading = False
+            if error is not None:
+                self._ascend_devices = []
+                self._ascend_mounts = []
+                self.ascend_device_label.setText(
+                    "Ascend 设备节点：探测失败，将使用兼容默认映射（可重试）")
+            else:
+                self._ascend_devices, self._ascend_mounts = resources
+                self._ascend_devices = self._ascend_devices or []
+                self._ascend_mounts = self._ascend_mounts or []
+                davinci_count = sum(
+                    node.startswith("/dev/davinci")
+                    for node in self._ascend_devices
+                )
+                self.ascend_device_label.setText(
+                    f"Ascend 设备节点：已探测 {davinci_count} 个 davinci 节点、"
+                    f"{len(self._ascend_mounts)} 个系统挂载；仅映射实际存在的资源")
+            if regenerate_when_done:
+                self._regen()
+
+        self._run_quick(fn, on_done)
 
     def _run_quick(self, fn, on_done) -> None:
         """后台快任务：保持引用防止运行中线程被回收，完成后自动清理。"""
@@ -310,6 +371,10 @@ class ContainerPage(QWidget):
                 extra_mounts.append(VolumeMount(host, cont, ro))
         kv_dirs = [self.kv_list.item(i).text() for i in range(self.kv_list.count())]
         dev = self.ctx.device_of(server) if server else None
+        privileged = any(
+            node in ("/dev/ummu", "/dev/uburma")
+            for node in (self._ascend_devices or [])
+        )
         return ContainerCreateConfig(
             image=self.current_image(), name=self.name_edit.text().strip(),
             device_type=dev.device_type if dev else DeviceType.UNKNOWN,
@@ -317,12 +382,20 @@ class ContainerPage(QWidget):
             shm_size=self.shm_edit.text().strip() or "512g",
             network=self.net_edit.text().strip(),
             kv_cache_dirs=kv_dirs, model_mount=model_mount,
-            extra_mounts=extra_mounts)
+            extra_mounts=extra_mounts,
+            device_nodes=self._ascend_devices or [],
+            system_mounts=self._ascend_mounts or [],
+            privileged=privileged)
 
     def _regen(self) -> None:
         server = self.ctx.server
         if server is None:
             QMessageBox.information(self, "提示", "请先在步骤1勾选要登录的服务器")
+            return
+        device = self.ctx.device_of(server)
+        if (device.device_type == DeviceType.ASCEND
+                and (self._ascend_devices is None or self._ascend_mounts is None)):
+            self._refresh_ascend_devices(regenerate_when_done=True)
             return
         try:
             cmd = ContainerManager.generate_run_command(self._build_config())

@@ -12,15 +12,24 @@ from .models import CommandResult, DeviceType, VolumeMount
 from .shell import flatten_command, shq
 from .ssh_client import SSHClient
 
-# Ascend 容器必需的系统挂载（驱动/工具）
+# Ascend 容器候选系统挂载（按宿主机实际存在情况筛选；父目录存在时跳过子路径）
+ASCEND_SYSTEM_MOUNT_CANDIDATES: List[str] = [
+    "/usr/local/Ascend/driver",
+    "/usr/local/Ascend/driver/lib64",
+    "/usr/local/Ascend/driver/tools/hccn_tool",
+    "/usr/local/Ascend/driver/version.info",
+    "/usr/local/dcmi",
+    "/usr/local/sbin",
+    "/usr/local/bin/npu-smi",
+    "/usr/lib64",
+    "/etc/ascend_install.info",
+    "/etc/hccl_rootinfo.json",
+    "/etc/hixlep",
+    "/root/.cache",
+]
+
 ASCEND_SYSTEM_MOUNTS: List[Tuple[str, str]] = [
-    ("/usr/local/dcmi", "/usr/local/dcmi"),
-    ("/usr/local/Ascend/driver/tools/hccn_tool", "/usr/local/Ascend/driver/tools/hccn_tool"),
-    ("/usr/local/bin/npu-smi", "/usr/local/bin/npu-smi"),
-    ("/usr/local/Ascend/driver/lib64/", "/usr/local/Ascend/driver/lib64/"),
-    ("/usr/local/Ascend/driver/version.info", "/usr/local/Ascend/driver/version.info"),
-    ("/etc/ascend_install.info", "/etc/ascend_install.info"),
-    ("/root/.cache", "/root/.cache"),
+    (path, path) for path in ASCEND_SYSTEM_MOUNT_CANDIDATES
 ]
 
 # 视为可跨服务器共享的网络文件系统
@@ -43,6 +52,9 @@ class ContainerCreateConfig:
     model_mount: Optional[VolumeMount] = None
     extra_mounts: List[VolumeMount] = field(default_factory=list)
     extra_args: str = ""
+    device_nodes: List[str] = field(default_factory=list)
+    system_mounts: List[Tuple[str, str]] = field(default_factory=list)
+    privileged: bool = False
 
     def validate(self) -> None:
         if not self.image:
@@ -52,6 +64,12 @@ class ContainerCreateConfig:
         for d in self.kv_cache_dirs:
             if not d.startswith("/"):
                 raise DockerError(f"kvcache 挂载目录必须是绝对路径: {d}")
+        for node in self.device_nodes:
+            if not node.startswith("/dev/") or re.search(r"\s", node):
+                raise DockerError(f"非法的 Ascend 设备节点: {node!r}")
+        for host, container in self.system_mounts:
+            if not host.startswith("/") or not container.startswith("/"):
+                raise DockerError(f"非法的 Ascend 系统挂载: {host!r} -> {container!r}")
 
 
 @dataclass
@@ -139,14 +157,17 @@ class ContainerManager:
             # Ascend: --net=host + 全部 davinci 设备 + 驱动/工具挂载
             if cfg.network:
                 lines.append(f"    --net={cfg.network}")
+            if cfg.privileged:
+                lines.append("    --privileged=true")
             if cfg.shm_size:
                 lines.append(f"    --shm-size {cfg.shm_size}")
-            for i in range(cfg.device_count):
-                lines.append(f"    --device /dev/davinci{i}")
-            lines.append("    --device /dev/davinci_manager")
-            lines.append("    --device /dev/devmm_svm")
-            lines.append("    --device /dev/hisi_hdc")
-            for host, cont in ASCEND_SYSTEM_MOUNTS:
+            device_nodes = cfg.device_nodes or (
+                [f"/dev/davinci{i}" for i in range(cfg.device_count)]
+                + ["/dev/davinci_manager", "/dev/devmm_svm", "/dev/hisi_hdc"])
+            for node in device_nodes:
+                lines.append(f"    --device {shq(node)}")
+            system_mounts = cfg.system_mounts or ASCEND_SYSTEM_MOUNTS
+            for host, cont in system_mounts:
                 lines.append(f"    -v {shq(host)}:{shq(cont)}")
         elif cfg.device_type == DeviceType.NVIDIA:
             # NVIDIA: --runtime nvidia --gpus all + 端口映射 + --ipc=host
@@ -178,6 +199,44 @@ class ContainerManager:
         lines.append(f"    {shq(cfg.image)}")
         lines.append("    bash")
         return " \\\n".join(lines)
+
+    def list_ascend_devices(self) -> List[str]:
+        """列出宿主机实际存在的 Ascend 设备节点（不同型号驱动节点不同）。"""
+        cmd = (
+            "for d in /dev/davinci* /dev/devmm_svm /dev/hisi_hdc "
+            "/dev/ummu /dev/uburma; do "
+            "if [ -e \"$d\" ]; then printf '%s\\n' \"$d\"; fi; done | sort -u -V"
+        )
+        res = self.ssh.exec(cmd, timeout=30)
+        if not res.ok:
+            raise DockerError(
+                f"探测 Ascend 设备节点失败: {res.stderr.strip()[:300]}")
+        nodes = [line.strip() for line in res.stdout.splitlines() if line.strip()]
+        if not nodes:
+            raise DockerError("未找到 /dev/davinci* 等 Ascend 设备节点")
+        return nodes
+
+    def list_ascend_mounts(self) -> List[Tuple[str, str]]:
+        """列出宿主机实际存在的 Ascend 驱动/工具/配置挂载路径。"""
+        candidates = " ".join(shq(path) for path in ASCEND_SYSTEM_MOUNT_CANDIDATES)
+        cmd = (
+            f"for p in {candidates}; do "
+            "if [ -e \"$p\" ]; then printf '%s\\n' \"$p\"; fi; done"
+        )
+        res = self.ssh.exec(cmd, timeout=30)
+        if not res.ok:
+            raise DockerError(
+                f"探测 Ascend 系统挂载失败: {res.stderr.strip()[:300]}")
+        selected: List[Tuple[str, str]] = []
+        for host in (line.strip().rstrip("/") for line in res.stdout.splitlines()
+                     if line.strip()):
+            nested = any(
+                host == parent or host.startswith(parent + "/")
+                for parent, _ in selected
+            )
+            if not nested:
+                selected.append((host, host))
+        return selected
 
     # ------------------------------------------------------------ 执行
     def create(self, command: str,

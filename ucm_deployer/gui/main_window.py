@@ -194,7 +194,7 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self, "关于",
             f"<b>{APP_NAME}</b> v{__version__}<br><br>"
-            "UCM (Unified Cache Management) 一键部署工具<br>"
+            "UCM (Unified Cache Management) 安装与环境预检工具<br>"
             "适用引擎: vLLM / vLLM-Ascend / SGLang<br>"
             "适用硬件: Ascend NPU / NVIDIA GPU<br><br>"
             "配置目录: ~/.ucm_deployer")

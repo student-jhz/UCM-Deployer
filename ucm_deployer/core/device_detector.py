@@ -9,7 +9,7 @@ from .models import DeviceInfo, DeviceType
 from .ssh_client import SSHClient
 
 _NPU_ROW = re.compile(
-    r"^\|\s*(\d+)\s+([A-Za-z0-9][A-Za-z0-9\-]*)\s+\|\s*(OK|Warning|Alarm|Fault)\s*\|",
+    r"^\|\s*(\d+)\s*\|?\s*([A-Za-z0-9][A-Za-z0-9\-]*)\s*\|\s*(OK|Warning|Alarm|Fault)\s*\|",
     re.M,
 )
 

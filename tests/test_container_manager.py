@@ -41,7 +41,7 @@ def test_ascend_run_command(fake_ssh):
     assert "--device /dev/devmm_svm" in cmd
     assert "--device /dev/hisi_hdc" in cmd
     assert "-v /usr/local/dcmi:/usr/local/dcmi" in cmd
-    assert "-v /usr/local/Ascend/driver/lib64/:/usr/local/Ascend/driver/lib64/" in cmd
+    assert "-v /usr/local/Ascend/driver:/usr/local/Ascend/driver" in cmd
     assert "-v /etc/ascend_install.info:/etc/ascend_install.info" in cmd
     assert "-v /mnt/nfs_share:/mnt/nfs_share" in cmd
     assert "-v /data/models/DeepSeek:/models:ro" in cmd
@@ -52,6 +52,91 @@ def test_ascend_run_command(fake_ssh):
     flat = flatten_command(cmd)
     assert "\\" not in flat
     assert flat.startswith("docker run -itd --name ucm-node1")
+
+
+def test_ascend_950_run_command_uses_actual_device_nodes(fake_ssh):
+    cm, _ = make_cm(fake_ssh)
+    cfg = ContainerCreateConfig(
+        image="vllm-ascend-ucm:v0.30.0rc2-a5", name="ucm090rc1-vllm-a5-jhz",
+        device_type=DeviceType.ASCEND, device_count=1,
+        device_nodes=[
+            "/dev/davinci0", "/dev/davinci1", "/dev/davinci2",
+            "/dev/davinci3", "/dev/davinci4", "/dev/davinci5",
+            "/dev/davinci6", "/dev/davinci7", "/dev/davinci_manager",
+            "/dev/hisi_hdc",
+        ],
+    )
+    cmd = cm.generate_run_command(cfg)
+    assert "--device /dev/davinci7" in cmd
+    assert "--device /dev/davinci_manager" in cmd
+    assert "--device /dev/hisi_hdc" in cmd
+    assert "/dev/devmm_svm" not in cmd
+
+
+def test_list_ascend_devices_skips_missing_950_node(fake_ssh):
+    cm, ssh = make_cm(fake_ssh)
+    ssh._client.add(
+        r"^for d in /dev/davinci\*",
+        stdout="\n".join([
+            "/dev/davinci0", "/dev/davinci1", "/dev/davinci2",
+            "/dev/davinci3", "/dev/davinci4", "/dev/davinci5",
+            "/dev/davinci6", "/dev/davinci7", "/dev/davinci_manager",
+            "/dev/hisi_hdc",
+        ]) + "\n",
+    )
+    nodes = cm.list_ascend_devices()
+    assert nodes.count("/dev/davinci_manager") == 1
+    assert "/dev/devmm_svm" not in nodes
+
+
+def test_list_ascend_mounts_keeps_existing_a5_paths(fake_ssh):
+    cm, ssh = make_cm(fake_ssh)
+    existing = [
+        "/usr/local/Ascend/driver",
+        "/etc/ascend_install.info",
+        "/etc/hccl_rootinfo.json",
+        "/etc/hixlep",
+        "/root/.cache",
+        "/usr/local/sbin",
+        "/usr/local/dcmi",
+        "/usr/local/bin/npu-smi",
+        "/usr/lib64",
+    ]
+    ssh._client.add(
+        r"^for p in",
+        stdout="\n".join(existing) + "\n",
+    )
+    mounts = cm.list_ascend_mounts()
+    assert ("/usr/local/Ascend/driver", "/usr/local/Ascend/driver") in mounts
+    assert ("/usr/local/sbin", "/usr/local/sbin") in mounts
+    assert all(host in existing for host, _ in mounts)
+
+
+def test_ascend_a5_run_command_adds_privileged_and_mounts(fake_ssh):
+    cm, _ = make_cm(fake_ssh)
+    cfg = ContainerCreateConfig(
+        image="vllm-ascend:v0.26.0rc1-a5-openeuler",
+        name="ucm-a5",
+        device_type=DeviceType.ASCEND,
+        device_count=8,
+        device_nodes=[
+            *[f"/dev/davinci{i}" for i in range(8)],
+            "/dev/davinci_manager",
+            "/dev/hisi_hdc",
+            "/dev/ummu",
+            "/dev/uburma",
+        ],
+        system_mounts=[
+            ("/usr/local/Ascend/driver", "/usr/local/Ascend/driver"),
+            ("/usr/local/sbin", "/usr/local/sbin"),
+        ],
+        privileged=True,
+    )
+    cmd = cm.generate_run_command(cfg)
+    assert "--privileged=true" in cmd
+    assert "--device /dev/ummu" in cmd
+    assert "--device /dev/uburma" in cmd
+    assert "-v /usr/local/Ascend/driver:/usr/local/Ascend/driver" in cmd
 
 
 # ============================================================ NVIDIA 模板

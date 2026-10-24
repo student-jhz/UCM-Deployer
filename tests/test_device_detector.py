@@ -14,6 +14,16 @@ _NPU_SMI = """+--------------------------------+
 | 3       910B3  | OK            |
 +--------------------------------+"""
 
+_NPU_SMI_950 = """+------------------------------------------------------------------------------------------------------------------+
+| npu-smi 25.6.rc1.b999                            Version: 25.6.rc1.b999                                          |
++--------+------------------+---------------+----------------------------------------------------------------------+
+| NPU ID | Name             | Health        | Power(W)              Temp(C)                  Hugepages-Usage(page) |
+        |                  | Bus-Id        | NPU Util(%)           Memory-Usage(MB)         HBM-Usage(MB)          |
++========+==================+===============+======================================================================+
+| 0      | Ascend950PR      | OK            | 270.2                 45                       0     / 0             |
+        |                  | NA            | 0                     0                        5249  / 131072          |
++------------------------------------------------------------------------------------------------------------------+"""
+
 
 def make_ssh(fake_ssh) -> SSHClient:
     ssh = SSHClient(ServerInfo.create(name="s", host="127.0.0.1"))
@@ -28,6 +38,15 @@ def test_detect_ascend_by_npu_smi(fake_ssh):
     assert dev.device_type == DeviceType.ASCEND
     assert dev.model == "Ascend 910B3"
     assert dev.count == 4
+
+
+def test_detect_ascend_950_pr_by_npu_smi(fake_ssh):
+    ssh = make_ssh(fake_ssh)
+    ssh._client.add(r"^npu-smi info", stdout=_NPU_SMI_950)
+    dev = DeviceDetector(ssh).detect()
+    assert dev.device_type == DeviceType.ASCEND
+    assert dev.model == "Ascend950PR"
+    assert dev.count == 1
 
 
 def test_detect_ascend_by_dev_nodes(fake_ssh):
