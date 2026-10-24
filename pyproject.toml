@@ -1,7 +1,7 @@
 [project]
 name = "ucm-deployer"
-version = "0.3.1"
-description = "UCM (Unified Cache Management) 一键部署工具：单服务器镜像构建与容器创建（vLLM / vLLM-Ascend / SGLang）"
+version = "0.3.2"
+description = "UCM (Unified Cache Management) 安装与环境预检工具：镜像准备、容器准备和容器内预检"
 requires-python = ">=3.9"
 
 [tool.pytest.ini_options]

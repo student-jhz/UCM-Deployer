@@ -1,21 +1,21 @@
 # UCM Deployer
 
-**UCM (Unified Cache Management) 一键部署工具 —— Windows 桌面版**
+**UCM (Unified Cache Management) 安装与环境预检工具 —— Windows 桌面版**
 
 :book: **[在线使用文档（含界面截图）](https://student-jhz.github.io/UCM-Deployer/)**
 
-面向 vLLM / vLLM-Ascend / SGLang 推理容器（Ascend NPU / NVIDIA GPU），把 UCM 的部署简化为四个向导步骤：
+面向 vLLM / vLLM-Ascend / SGLang 运行环境（Ascend NPU / NVIDIA GPU），把 UCM 安装与环境预检简化为四个向导步骤：
 
 ```
-① 服务器管理 → ② 镜像构建 → ③ 容器创建 → ④ 环境预检
+① 服务器管理 → ② 镜像准备 → ③ 容器准备 → ④ 环境预检
 ```
 
 - **步骤1 服务器管理**：SSH 登录信息本地加密保存/复用；单选登录一台服务器；`npu-smi`/`nvidia-smi` 设备探测（型号/卡数/CPU 架构）
-- **步骤2 镜像构建**：选服务器已有镜像（**关键字筛选**）或上传 tar 包 `docker load`；上传 wrapt whl、UCM whl、（可选）ucm-toolkit whl 包（均附**在线下载链接**，toolkit 与 UCM 同站点）；构建前自动**校验服务器/镜像/安装包匹配**（设备平台 + whl 架构标记）；生成 Dockerfile 构建带 UCM 的镜像
-- **步骤3 容器创建**：选 UCM 镜像（**选择时自动校验**镜像内 UCM）；自动识别卡数**全量映射加速卡**（NPU: 全部 davinci 设备 + 驱动挂载 + `--net=host`；GPU: `--runtime nvidia --gpus all -p 8000:8000`）；KV Cache / 模型只读 / 自定义挂载；docker run 命令**可编辑**后执行
-- **步骤4 环境预检**：在已创建容器内运行 `ucm-toolkit run precheck`（驱动/内核/共享内存/AIO 检查 + **可选挂载目录带宽测试**——在挂载目录下创建临时子目录执行读写负载、结束自动清理；目录浏览为**容器内视角**且校验存在性）；**预检参数可配置**（读取/编辑随 ucm-toolkit 安装的 JSON 配置，`--config` 叠加生效）；结果**表格+详情区展示**（PASS/WARN/FAIL/INFO 着色、中文名与排查建议）
+- **步骤2 镜像准备**：选服务器已有镜像（**关键字筛选**）、上传 tar 包 `docker load`，或输入镜像仓库地址（如 `quay.io/ascend/vllm-ascend:v0.30.0rc2-a5-openeuler`）由本地 Docker **按目标服务器架构拉取**、导出 `tar.gz` 并自动上传加载；已含 UCM 的镜像可直接复用并跳过构建；确需构建时上传 wrapt/UCM/ucm-toolkit whl，构建前自动校验设备平台与架构
+- **步骤3 容器准备**：选 UCM 镜像（**选择时自动校验**镜像内 UCM）；自动识别卡数**全量映射加速卡**（NPU: 全部 davinci 设备 + 驱动挂载 + `--net=host`；GPU: `--runtime nvidia --gpus all -p 8000:8000`）；KV Cache / 模型只读 / 自定义挂载；docker run 命令**可编辑**后执行；已有 UCM 容器可跳过创建
+- **步骤4 环境预检**：**显式选择目标容器**（刷新 `docker ps -a` 后选择已有容器或输入容器名）；在所选容器内运行 `ucm-toolkit run precheck`（驱动/内核/共享内存/AIO 检查 + **可选挂载目录带宽测试**）；**预检参数可配置**；结果**表格+详情区展示**（PASS/WARN/FAIL/INFO 着色、中文名与排查建议）
 - **工具菜单**：清理指定容器（`docker ps -a` 勾选删除）/ 清理指定镜像（`docker images` 勾选删除），作用于当前登录的服务器
-- 步骤间**自由跳转**（前置条件在操作执行时拦截）；所有生成的命令**先展示、可编辑、再执行**
+- 步骤间**自由跳转**（前置条件在操作执行时拦截）；所有生成的命令**先展示、可编辑、再执行**；本工具负责 UCM 安装与环境预检，不负责启动或部署推理服务
 
 ## 快速开始
 
@@ -64,7 +64,7 @@ git tag v0.2.0 && git push origin v0.2.0
 
 ## 文档
 
-- [用户手册](docs/用户手册.md) —— 安装、三步操作详解、FAQ
+- [用户手册](docs/用户手册.md) —— 安装、四步操作详解、FAQ
 - [架构设计](docs/architecture.md) —— 模块划分、关键决策
 
 ## 目录结构
@@ -82,7 +82,7 @@ UCM-Deployer/
 │   │   ├── docker_manager.py     # docker 操作
 │   │   ├── image_builder.py      # 匹配校验 + 镜像构建
 │   │   └── container_manager.py  # docker run 生成/执行
-│   ├── gui/                      # PySide6 三步向导
+│   ├── gui/                      # PySide6 四步向导
 │   │   ├── widgets/              # 三个步骤页面 + 通用组件
 │   │   ├── main_window.py        # 主窗口/导航守卫/状态栏
 │   │   └── theme.py              # QSS 主题 + 图标

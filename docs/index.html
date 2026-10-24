@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="description" content="UCM Deployer 使用文档 - 从服务器登录、镜像构建、容器创建到环境预检的一站式推理容器部署指南">
+<meta name="description" content="UCM Deployer 使用文档 - UCM 安装与环境预检工具：服务器管理、镜像准备、容器准备、容器内环境预检">
 <meta name="theme-color" content="#2563eb">
 <title>UCM Deployer 使用文档</title>
 <style>
@@ -250,15 +250,15 @@ footer {
 </head>
 <body>
 <aside class="sidebar">
-  <div class="logo">UCM Deployer<small>统一缓存管理部署工具</small></div>
+  <div class="logo">UCM Deployer<small>UCM 安装与环境预检</small></div>
   <nav>
     <div class="nav-group">开始</div>
     <a class="nav-link" href="#intro">工具简介</a>
     <a class="nav-link" href="#quickstart">快速开始</a>
-    <div class="nav-group">部署流程</div>
+    <div class="nav-group">安装与预检流程</div>
     <a class="nav-link" href="#step1"><span class="num">1</span>服务器管理</a>
-    <a class="nav-link" href="#step2"><span class="num">2</span>镜像构建</a>
-    <a class="nav-link" href="#step3"><span class="num">3</span>容器创建</a>
+    <a class="nav-link" href="#step2"><span class="num">2</span>镜像准备</a>
+    <a class="nav-link" href="#step3"><span class="num">3</span>容器准备</a>
     <a class="nav-link" href="#step4"><span class="num">4</span>环境预检</a>
     <div class="nav-group">进阶</div>
     <a class="nav-link" href="#precheck-config">预检参数配置</a>
@@ -271,30 +271,31 @@ footer {
 <div class="main">
 <header class="hero">
   <h1>UCM Deployer</h1>
-  <p class="lead">面向 vLLM / vLLM-Ascend / SGLang 推理容器的 Windows 桌面部署工具。从 SSH 登录、UCM 镜像构建、加速卡容器创建，到环境预检与清理，一站式完成。</p>
+  <p class="lead">面向 vLLM / vLLM-Ascend / SGLang 运行环境的 Windows 桌面工具。专注 UCM 安装与环境预检：服务器管理、镜像准备、容器准备、容器内检查与运维清理。</p>
   <div class="actions">
     <a class="btn btn-primary" href="#quickstart">快速开始</a>
-    <a class="btn btn-outline" href="https://github.com/student-jhz/UCM-Deployer/releases/latest">下载 EXE</a>
+    <a class="btn btn-outline" href="https://github.com/student-jhz/UCM-Deployer/releases/latest/download/UCM-Deployer.exe">下载 EXE</a>
   </div>
-  <p class="meta">支持 Ascend NPU · NVIDIA GPU · Linux 服务器 · Docker</p>
+  <p class="meta">当前版本 v0.3.2 · 支持 Ascend NPU · NVIDIA GPU · Linux 服务器 · Docker</p>
 </header>
 
 <div class="container">
 <section id="intro">
   <h2>工具简介</h2>
-  <p>UCM Deployer 是 Unified Cache Management（UCM）的一键部署工具。它把原本需要手工执行的 SSH 命令、离线 whl 安装、Dockerfile 构建、<code>docker run</code> 参数拼装和容器内环境检查，收敛为四个可视化步骤。</p>
+  <p>UCM Deployer 是 Unified Cache Management（UCM）的安装与环境预检工具。它把原本需要手工执行的 SSH 命令、镜像导入、离线 whl 安装、<code>docker run</code> 参数拼装和容器内环境检查，收敛为四个可视化步骤；不负责启动或部署推理服务。</p>
   <div class="flow">
     <div class="step"><strong>① 服务器管理</strong>SSH 登录与设备探测</div>
-    <div class="step"><strong>② 镜像构建</strong>离线安装 UCM 组件</div>
-    <div class="step"><strong>③ 容器创建</strong>映射加速卡与目录</div>
+    <div class="step"><strong>② 镜像准备</strong>复用或构建 UCM 镜像</div>
+    <div class="step"><strong>③ 容器准备</strong>创建或复用 UCM 容器</div>
     <div class="step"><strong>④ 环境预检</strong>驱动 / 内核 / 带宽检查</div>
   </div>
   <div class="cards">
     <div class="card"><h3>凭据复用</h3><p>密码或私钥登录，密码 Fernet 加密保存在本机，下次打开自动复用。</p></div>
-    <div class="card"><h3>设备感知</h3><p>自动识别 Ascend / NVIDIA 型号、卡数与 CPU 架构，并贯穿构建与容器创建。</p></div>
-    <div class="card"><h3>离线构建</h3><p>上传 wrapt、UCM、ucm-toolkit whl，在服务器内生成带 UCM 的基础镜像。</p></div>
+    <div class="card"><h3>设备感知</h3><p>自动识别 Ascend / NVIDIA 型号、卡数与 CPU 架构，并贯穿镜像与容器准备。</p></div>
+    <div class="card"><h3>镜像导入</h3><p>支持本地 tar 包上传，也支持输入镜像仓库地址，按目标架构拉取后自动导入服务器。</p></div>
+    <div class="card"><h3>按需构建</h3><p>仅在基础镜像未安装 UCM 时上传 wrapt、UCM、ucm-toolkit whl 并构建新镜像。</p></div>
     <div class="card"><h3>命令透明</h3><p>所有 Docker 命令先完整展示，允许编辑，再执行，避免黑盒操作。</p></div>
-    <div class="card"><h3>环境预检</h3><p>容器内检查驱动、内核、共享内存、AIO 与存储带宽，输出中文排查建议。</p></div>
+    <div class="card"><h3>环境预检</h3><p>显式选择容器，检查驱动、内核、共享内存、AIO 与存储带宽，输出中文排查建议。</p></div>
     <div class="card"><h3>运维善后</h3><p>按关键字筛选并清理容器或镜像，删除前展示完整对象列表。</p></div>
   </div>
   <figure class="figure">
@@ -306,7 +307,7 @@ footer {
 <section id="quickstart">
   <h2>快速开始</h2>
   <h3>方式一：直接使用 EXE（推荐）</h3>
-  <p>从 <a href="https://github.com/student-jhz/UCM-Deployer/releases/latest">Releases</a> 下载最新的 <code>UCM-Deployer.exe</code>，双击即可运行，无需安装 Python。</p>
+  <p><a href="https://github.com/student-jhz/UCM-Deployer/releases/latest/download/UCM-Deployer.exe">直接下载最新版 <code>UCM-Deployer.exe</code></a>，双击即可运行，无需安装 Python。</p>
   <pre><code>.\\UCM-Deployer.exe --smoke</code></pre>
   <h3>方式二：从源码运行</h3>
   <pre><code>git clone https://github.com/student-jhz/UCM-Deployer.git
@@ -320,14 +321,15 @@ python -m venv .venv
   <div class="callout">
     <b>目标服务器要求</b>
     Linux + SSH + Docker；Ascend 服务器需宿主机可用 <code>npu-smi</code>；NVIDIA 服务器需 <code>nvidia-smi</code> 与 nvidia-container-runtime。
+    使用镜像仓库拉取时，本地还需安装并启动 Docker Desktop。
   </div>
-  <h3>准备安装包</h3>
+  <h3>按需准备安装包</h3>
   <table>
     <thead><tr><th>包</th><th>必填</th><th>获取途径</th></tr></thead>
     <tbody>
-      <tr><td>wrapt whl</td><td>是</td><td><a href="https://pypi.org/project/wrapt/1.17.2/#files">PyPI wrapt 1.17.2</a>，选择匹配 CPU 架构与 Python 版本</td></tr>
-      <tr><td>UCM whl</td><td>是</td><td><a href="https://github.com/ModelEngine-Group/unified-cache-management/releases">Unified Cache Management Releases</a></td></tr>
-      <tr><td>ucm-toolkit whl</td><td>预检需要</td><td>与 UCM 同站点发布</td></tr>
+      <tr><td>wrapt whl</td><td>构建新镜像时</td><td><a href="https://pypi.org/project/wrapt/1.17.2/#files">PyPI wrapt 1.17.2</a>，选择匹配 CPU 架构与 Python 版本</td></tr>
+      <tr><td>UCM whl</td><td>构建新镜像时</td><td><a href="https://github.com/ModelEngine-Group/unified-cache-management/releases">Unified Cache Management Releases</a></td></tr>
+      <tr><td>ucm-toolkit whl</td><td>预检需要（镜像未内置时）</td><td>与 UCM 同站点发布</td></tr>
     </tbody>
   </table>
 </section>
@@ -335,7 +337,7 @@ python -m venv .venv
 <section id="step1">
   <span class="step-badge">步骤 1</span>
   <h2>服务器管理</h2>
-  <p>登录要部署的服务器并探测设备信息。一次只登录一台服务器，后续所有操作都作用于当前勾选的服务器。</p>
+  <p>登录要操作的服务器并探测设备信息。一次只登录一台服务器，后续所有操作都作用于当前勾选的服务器。</p>
   <figure class="figure">
     <img src="screenshots/step1-servers.png" alt="服务器管理界面" loading="lazy">
     <figcaption>服务器列表包含登录状态、设备类型、型号、卡数、CPU 架构与备注</figcaption>
@@ -345,7 +347,7 @@ python -m venv .venv
     <li>点击「➕ 添加服务器」，填写名称、地址、账号、认证方式与备注。</li>
     <li>点击「🔌 测试连接」确认 SSH 可达。</li>
     <li>点击「🔍 探测设备」，自动识别设备类型、型号、卡数与 CPU 架构。</li>
-    <li>勾选「登录」，选择本次部署目标。</li>
+    <li>勾选「登录」，选择本次操作目标。</li>
   </ol>
   <figure class="figure">
     <img src="screenshots/dialog-add-server.png" alt="添加服务器对话框" loading="lazy">
@@ -356,7 +358,7 @@ python -m venv .venv
     <tbody>
       <tr><td>设备类型与型号</td><td><code>npu-smi info</code> / <code>nvidia-smi</code></td><td>匹配基础镜像平台，生成设备映射</td></tr>
       <tr><td>卡数</td><td>设备探测结果</td><td>决定步骤 3 全量映射加速卡数量</td></tr>
-      <tr><td>CPU 架构</td><td><code>uname -m</code></td><td>校验 wrapt whl 的 x86_64 / aarch64 标记</td></tr>
+      <tr><td>CPU 架构</td><td><code>uname -m</code></td><td>校验 whl 架构，并为镜像仓库拉取选择 linux/amd64 或 linux/arm64</td></tr>
     </tbody>
   </table>
   <div class="callout warn">
@@ -367,16 +369,18 @@ python -m venv .venv
 
 <section id="step2">
   <span class="step-badge">步骤 2</span>
-  <h2>镜像构建</h2>
-  <p>在已登录服务器上，把 wrapt、UCM 与可选的 ucm-toolkit 安装进基础镜像，生成带 UCM 的推理引擎镜像。</p>
+  <h2>镜像准备</h2>
+  <p>优先复用已安装 UCM 的镜像；仅在确需制作新镜像时，才把 wrapt、UCM 与可选的 ucm-toolkit 安装进基础镜像。</p>
   <figure class="figure">
-    <img src="screenshots/step2-build.png" alt="镜像构建界面" loading="lazy">
-    <figcaption>镜像构建页：基础镜像选择、离线安装包、匹配校验与构建日志</figcaption>
+    <img src="screenshots/step2-build.png" alt="镜像准备界面" loading="lazy">
+    <figcaption>镜像准备页：仓库地址拉取、基础镜像选择、按需构建与匹配校验</figcaption>
   </figure>
   <h3>操作流程</h3>
   <ol>
-    <li>选择基础镜像：镜像列表来自服务器 <code>docker images</code>，输入关键字即可筛选；没有可用镜像时可上传 tar / tar.gz 并自动 <code>docker load</code>。</li>
-    <li>选择安装包：wrapt 与 UCM 必填，ucm-toolkit 用于步骤 4 预检。</li>
+    <li>导入镜像：可上传本地 tar / tar.gz，也可输入 <code>quay.io/ascend/vllm-ascend:v0.30.0rc2-a5-openeuler</code> 这类仓库地址。</li>
+    <li>自动匹配架构：本地 Docker 按目标服务器 CPU 架构执行 <code>docker pull --platform</code>，导出 <code>tar.gz</code> 后自动上传并 <code>docker load</code>。</li>
+    <li>检查 UCM：点击「✅ 检查所选镜像 UCM」。已安装则记录该镜像并直接进入步骤 3，无需构建。</li>
+    <li>按需构建：仅在基础镜像未安装 UCM 时选择 wrapt、UCM 与 ucm-toolkit whl。</li>
     <li>确认新镜像名：默认生成 <code>&lt;基础镜像名&gt;:ucm-&lt;UCM版本&gt;</code>，也可手动修改。</li>
     <li>点击「🔍 校验匹配」，确认设备平台与 whl 架构匹配。</li>
     <li>点击「🔨 开始构建」，上传安装包并执行 <code>docker build</code>。</li>
@@ -390,21 +394,25 @@ python -m venv .venv
     </tbody>
   </table>
   <div class="callout">
-    <b>离线安装顺序</b>
-    工具生成 Dockerfile 时先安装 wrapt，再安装 UCM 与 ucm-toolkit，避免 UCM 依赖解析失败。
+    <b>本地 Docker 前置条件</b>
+    使用镜像仓库拉取时，本机需安装并启动 Docker Desktop。工具会按目标服务器 <code>aarch64</code> / <code>x86_64</code> 选择对应平台，避免把错误架构镜像导入服务器。
   </div>
 </section>
 
 <section id="step3">
   <span class="step-badge">步骤 3</span>
-  <h2>容器创建</h2>
-  <p>基于步骤 2 生成的 UCM 镜像创建推理容器。工具会根据设备卡数全量映射加速卡，并生成可编辑的 <code>docker run</code> 命令。</p>
+  <h2>容器准备</h2>
+  <p>可基于 UCM 镜像创建新容器；如果服务器上已有安装 UCM 的容器，可跳过创建，直接进入步骤 4 选择该容器预检。</p>
   <figure class="figure">
-    <img src="screenshots/step3-container.png" alt="容器创建界面" loading="lazy">
-    <figcaption>容器创建页：镜像校验、容器参数、挂载配置与命令预览</figcaption>
+    <img src="screenshots/step3-container.png" alt="容器准备界面" loading="lazy">
+    <figcaption>容器准备页：镜像校验、容器参数、挂载配置与命令预览</figcaption>
   </figure>
   <h3>选择镜像</h3>
   <p>进入页面后自动加载镜像列表。选择镜像时会后台校验 UCM 是否安装：已安装则显示版本；未安装则提示回步骤 2 构建或更换镜像。</p>
+  <div class="callout">
+    <b>复用已有容器</b>
+    若目标容器已安装 UCM，无需重复创建。直接进入步骤 4，刷新容器列表并选择该容器即可开始环境预检。
+  </div>
   <h3>容器参数</h3>
   <table>
     <thead><tr><th>参数</th><th>默认值</th><th>说明</th></tr></thead>
@@ -454,11 +462,21 @@ docker run -itd \\
 <section id="step4">
   <span class="step-badge">步骤 4</span>
   <h2>环境预检</h2>
-  <p>在已创建容器内运行 <code>ucm-toolkit run precheck</code>，提前发现可能影响 UCM 启动或缓存读写的问题。</p>
+  <p>显式选择目标容器，并在该容器内运行 <code>ucm-toolkit run precheck</code>，提前发现可能影响 UCM 启动或缓存读写的问题。</p>
   <figure class="figure">
     <img src="screenshots/step4-precheck.png" alt="环境预检界面" loading="lazy">
-    <figcaption>预检结果以表格与详情联动展示，包含状态、阈值与中文排查建议</figcaption>
+    <figcaption>先显式选择目标容器；结果以表格与详情联动展示，包含状态、阈值与中文排查建议</figcaption>
   </figure>
+  <h3>选择目标容器</h3>
+  <ol>
+    <li>进入步骤 4 后点击「🔄 刷新容器」，工具执行 <code>docker ps -a</code> 获取服务器上的容器。</li>
+    <li>在「目标容器」下拉框中选择要预检的容器；也可输入容器名。</li>
+    <li>确认状态行显示 <code>目标容器：...</code> 后，再开始预检。</li>
+  </ol>
+  <div class="callout">
+    <b>支持已有容器</b>
+    服务器上已经创建且安装 UCM 的容器无需重建；刷新并选择该容器后，可直接执行环境预检。
+  </div>
   <h3>检查模式</h3>
   <table>
     <thead><tr><th>模式</th><th>行为</th><th>适用场景</th></tr></thead>
@@ -475,7 +493,7 @@ docker run -itd \\
   <table>
     <thead><tr><th>状态</th><th>含义</th><th>建议</th></tr></thead>
     <tbody>
-      <tr><td><span class="status pass">PASS</span></td><td>检查通过</td><td>可继续部署</td></tr>
+      <tr><td><span class="status pass">PASS</span></td><td>检查通过</td><td>可继续后续操作</td></tr>
       <tr><td><span class="status warn">WARN</span></td><td>存在警告，不阻塞</td><td>查看详情与建议，评估是否影响业务</td></tr>
       <tr><td><span class="status fail">FAIL</span></td><td>关键项失败</td><td>按建议修复后重新预检</td></tr>
       <tr><td><span class="status info">INFO</span></td><td>信息项或跳过项</td><td>用于留档与人工确认</td></tr>
@@ -519,7 +537,7 @@ docker run -itd \\
 
 <section id="tools">
   <h2>容器与镜像清理</h2>
-  <p>工具菜单提供部署流程之外的运维善后功能，作用于当前勾选登录的服务器。</p>
+  <p>工具菜单提供安装与预检流程之外的运维善后功能，作用于当前勾选登录的服务器。</p>
   <figure class="figure">
     <img src="screenshots/dialog-cleanup-containers.png" alt="清理容器对话框" loading="lazy">
     <figcaption>容器列表包含运行中与已停止容器，关键字筛选不丢失勾选</figcaption>
@@ -545,7 +563,7 @@ docker run -itd \\
     <p>密码使用 Fernet 对称加密保存在本地 <code>~/.ucm_deployer/servers.json</code>，密钥保存在同目录 <code>.secret.key</code>。密文被单独拷贝时无法直接还原明文。</p>
   </details>
   <details>
-    <summary>镜像构建时 wrapt 安装失败怎么办？</summary>
+    <summary>按需构建镜像时 wrapt 安装失败怎么办？</summary>
     <p>确认 wrapt whl 的架构标记与服务器 CPU 架构一致：x86_64 服务器选择 manylinux x86_64 包，aarch64 服务器选择 manylinux aarch64 包。</p>
   </details>
   <details>
@@ -558,7 +576,7 @@ docker run -itd \\
   </details>
   <details>
     <summary>容器内 npu-smi 报 rc=172 / -8020？</summary>
-    <p>通常表示 NPU 正被其他进程或容器占用，宿主机 <code>npu-smi info</code> 仍可查看。该警告不影响推理与带宽检查，停用占用方后重试。</p>
+    <p>通常表示 NPU 正被其他进程或容器占用，宿主机 <code>npu-smi info</code> 仍可查看。该警告不影响带宽检查，停用占用方后重试。</p>
   </details>
   <details>
     <summary>带宽测试某组合超时？</summary>
@@ -575,7 +593,7 @@ docker run -itd \\
   <div class="card">
     <h3>推荐版本</h3>
     <ul>
-      <li><a href="https://github.com/student-jhz/UCM-Deployer/releases/latest">最新稳定版 EXE</a>：适合正式部署。</li>
+      <li><a href="https://github.com/student-jhz/UCM-Deployer/releases/latest/download/UCM-Deployer.exe">最新稳定版 EXE（直接下载）</a>：适合正式使用。</li>
       <li><a href="https://github.com/student-jhz/UCM-Deployer">源码仓库</a>：适合开发与二次定制。</li>
       <li><a href="https://github.com/ModelEngine-Group/unified-cache-management">Unified Cache Management</a>：UCM 与 ucm-toolkit 发布地址。</li>
     </ul>
@@ -588,7 +606,6 @@ docker run -itd \\
     </ul>
   </div>
 </section>
-<!-- MORE -->
 </div>
 </div>
 <footer>UCM Deployer 使用文档 · 由 GitHub Pages 自动部署</footer>

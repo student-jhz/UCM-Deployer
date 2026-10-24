@@ -141,6 +141,8 @@ def main() -> int:
     ip.placeholder.setVisible(False)
     ip._apply_images()
     ip._update_platform_label()
+    ip.registry_ref_edit.setText(
+        "quay.io/ascend/vllm-ascend:v0.30.0rc2-a5-openeuler")
     ip.ucm_whl_edit.setText(r"D:\packages\uc_manager-0.8.0.dev20261015-py3-none-any.whl")
     ip.wrapt_whl_edit.setText(r"D:\packages\wrapt-1.17.2-cp39-cp39-manylinux2014_aarch64.whl")
     ip.toolkit_edit.setText(r"D:\packages\ucm_toolkit-0.8.0.dev1-py3-none-any.whl")
