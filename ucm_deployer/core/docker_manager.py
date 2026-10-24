@@ -14,6 +14,31 @@ class DockerError(Exception):
     """docker 操作失败。"""
 
 
+_IMAGE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:@-]*$")
+
+
+def validate_image_ref(ref: str) -> str:
+    ref = (ref or "").strip()
+    if not ref:
+        raise DockerError("请输入 Docker 镜像地址，例如 quay.io/ascend/vllm-ascend:v0.30.0rc2")
+    if ref.startswith(("http://", "https://", "docker://")):
+        raise DockerError("请输入 Docker 镜像引用，不要包含 http:// 或 https:// 协议头")
+    if re.search(r"\s", ref):
+        raise DockerError("镜像地址不能包含空白字符")
+    if re.search(r"[\"'`$;&|<>]", ref) or not _IMAGE_REF_RE.match(ref):
+        raise DockerError(f"镜像地址格式无效: {ref}")
+    return ref
+
+
+def platform_from_arch(arch: str) -> str:
+    arch = (arch or "").strip().lower()
+    if arch in ("aarch64", "arm64"):
+        return "linux/arm64"
+    if arch in ("x86_64", "amd64"):
+        return "linux/amd64"
+    return ""
+
+
 class DockerManager:
     def __init__(self, ssh: SSHClient):
         self.ssh = ssh
@@ -48,6 +73,23 @@ class DockerManager:
         res = self.ssh.exec(
             f"docker image inspect {shq(ref)} >/dev/null 2>&1", timeout=30)
         return res.ok
+
+    def pull_image(self, ref: str, platform: str = "",
+                   on_line: Optional[Callable[[str], None]] = None) -> str:
+        """在目标服务器上拉取镜像；本地无需安装 Docker。"""
+        ref = validate_image_ref(ref)
+        cmd = "docker pull"
+        if platform:
+            cmd += f" --platform {shq(platform)}"
+        cmd += f" {shq(ref)}"
+        res = self.ssh.exec_stream(cmd, on_line=on_line, timeout=7200)
+        if not res.ok:
+            raise DockerError(
+                f"服务器 docker pull 失败(退出码 {res.exit_code}): "
+                f"{(res.stderr or res.stdout).strip()[:400]}")
+        if not self.image_exists(ref):
+            raise DockerError(f"docker pull 成功但未找到镜像 {ref}")
+        return ref
 
     def load_image(self, remote_tar: str,
                    on_line: Optional[Callable[[str], None]] = None) -> List[str]:

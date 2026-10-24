@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 import pytest
 
-from ucm_deployer.core.docker_manager import DockerManager
+from ucm_deployer.core.docker_manager import (DockerManager, platform_from_arch,
+                                              validate_image_ref)
 from ucm_deployer.core.models import ServerInfo, UCMInfo
 from ucm_deployer.core.ssh_client import SSHClient
 
@@ -16,6 +17,23 @@ def make_dm(fake_ssh) -> tuple:
     ssh = SSHClient(ServerInfo.create(name="s", host="127.0.0.1"))
     ssh.connect()
     return DockerManager(ssh), ssh
+
+
+def test_validate_image_ref_accepts_registry_reference():
+    ref = "quay.io/ascend/vllm-ascend:v0.30.0rc2-a5-openeuler"
+    assert validate_image_ref(ref) == ref
+
+
+def test_validate_image_ref_rejects_protocol_and_shell_characters():
+    for ref in ("https://quay.io/ascend/vllm-ascend:v0.30.0", "a b", "a;b"):
+        with pytest.raises(Exception):
+            validate_image_ref(ref)
+
+
+def test_platform_from_arch():
+    assert platform_from_arch("aarch64") == "linux/arm64"
+    assert platform_from_arch("x86_64") == "linux/amd64"
+    assert platform_from_arch("") == ""
 
 
 def test_check_docker(fake_ssh):
@@ -40,6 +58,21 @@ def test_image_exists(fake_ssh):
     dm, ssh = make_dm(fake_ssh)
     ssh._client.add(r"docker image inspect img:1", stdout="")
     assert dm.image_exists("img:1")
+
+
+def test_pull_image_runs_on_server(fake_ssh):
+    dm, ssh = make_dm(fake_ssh)
+    lines = []
+    ssh._client.add(r"^docker pull", stdout="Digest: sha256:abc\nStatus: Downloaded\n")
+    ssh._client.add(r"docker image inspect", stdout="")
+    ref = dm.pull_image(
+        "quay.io/ascend/vllm-ascend:v0.30.0rc2-a5-openeuler",
+        platform="linux/arm64", on_line=lines.append)
+    assert ref == "quay.io/ascend/vllm-ascend:v0.30.0rc2-a5-openeuler"
+    assert "Status: Downloaded" in lines
+    assert ssh._client.channels[-2].executed_command == (
+        "docker pull --platform linux/arm64 "
+        "quay.io/ascend/vllm-ascend:v0.30.0rc2-a5-openeuler")
 
 
 def test_load_image_parses_refs(fake_ssh):

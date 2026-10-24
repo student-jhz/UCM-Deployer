@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 from typing import List, Optional
 
 from PySide6.QtCore import Qt
@@ -20,18 +21,21 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from ...core.docker_manager import DockerManager
+from ...core.docker_manager import (DockerManager, platform_from_arch,
+                                    validate_image_ref)
 from ...core.image_builder import (ImageBuildConfig, ImageBuilder,
                                    fetch_server_arch, suggest_tag,
                                    upload_image_tar, validate_build_match,
                                    whl_arch, whl_version)
-from ...core.local_image import platform_from_arch, pull_image_to_tar, validate_image_ref
 from ...core.models import DeviceType, DockerImage
+from ...core.shell import shq
 from ..state import AppContext
 from .common import (ParallelTaskPanel, QuickTask, combo_ref, fill_image_combo,
                      image_from_ref, setup_image_combo)
@@ -46,9 +50,11 @@ class ImagePage(QWidget):
         self._quick_tasks = []      # 运行中的 QuickTask 引用（防线程被回收）
         self._tag_dirty = False     # 用户手动编辑过新镜像名（停止自动建议）
         self._updating_tag = False  # 程序设置 tag 中（不算用户编辑）
+        self._pull_command_dirty = False
+        self._updating_pull_command = False
 
-        # ---------- 1. 选择基础镜像
-        image_box = QGroupBox("1. 选择基础镜像（服务器上已有镜像）")
+        # ---------- 1. 准备基础镜像
+        image_box = QGroupBox("1. 准备基础镜像")
         self.placeholder = QLabel("请先在「1. 服务器管理」勾选要登录的服务器")
         self.placeholder.setProperty("role", "hint")
         self.placeholder.setAlignment(Qt.AlignCenter)
@@ -59,38 +65,92 @@ class ImagePage(QWidget):
         self.image_combo.setMinimumWidth(440)
         self.image_combo.currentTextChanged.connect(self._suggest_tag_if_empty)
 
+        self.source_combo = QComboBox()
+        self.source_combo.addItem("服务器已有镜像")
+        self.source_combo.addItem("本地镜像包（离线导入）")
+        self.source_combo.addItem("镜像仓库（服务器拉取）")
+        self.source_combo.currentIndexChanged.connect(
+            lambda *_: self._update_source_hint())
+
+        self.source_stack = QStackedWidget()
+        self.source_combo.currentIndexChanged.connect(
+            self.source_stack.setCurrentIndex)
+
+        existing_page = QWidget()
+        existing_form = QFormLayout(existing_page)
+        existing_form.addRow("基础镜像", self.image_combo)
         refresh_btn = QPushButton("🔄 刷新镜像列表")
-        upload_btn = QPushButton("⬆ 上传镜像 tar/tar.gz")
-        pull_btn = QPushButton("⬇ 拉取镜像并上传")
-        check_ucm_btn = QPushButton("✅ 检查所选镜像 UCM")
-        refresh_btn.clicked.connect(self._refresh_images)
+        existing_btns = QHBoxLayout()
+        existing_btns.addWidget(refresh_btn)
+        existing_btns.addStretch(1)
+        existing_form.addRow("", existing_btns)
+        self.source_stack.addWidget(existing_page)
+
+        tar_page = QWidget()
+        tar_form = QFormLayout(tar_page)
+        self.tar_path_edit = QLineEdit()
+        self.tar_path_edit.setPlaceholderText(
+            "选择本地镜像 tar / tar.gz / tgz 文件；仅在服务器无法访问仓库时使用")
+        browse_tar_btn = QPushButton("浏览…")
+        upload_btn = QPushButton("导入到服务器")
+        browse_tar_btn.clicked.connect(
+            lambda: self._pick_file(self.tar_path_edit, "镜像包 (*.tar *.tar.gz *.tgz)"))
         upload_btn.clicked.connect(self._upload_tar)
+        tar_btns = QHBoxLayout()
+        tar_btns.addWidget(browse_tar_btn)
+        tar_btns.addWidget(upload_btn)
+        tar_btns.addStretch(1)
+        tar_form.addRow("镜像包", self.tar_path_edit)
+        tar_form.addRow("", tar_btns)
+        self.source_stack.addWidget(tar_page)
+
+        registry_page = QWidget()
+        registry_form = QFormLayout(registry_page)
+        self.registry_ref_edit = QLineEdit()
+        self.registry_ref_edit.setPlaceholderText(
+            "quay.io/ascend/vllm-ascend:v0.30.0rc2-a5-openeuler")
+        self.registry_ref_edit.setMinimumWidth(520)
+        self.pull_command_edit = QPlainTextEdit()
+        self.pull_command_edit.setPlaceholderText(
+            "输入镜像地址后自动生成 docker pull 命令；可在服务器上执行前修改")
+        self.pull_command_edit.setMinimumHeight(76)
+        self.pull_command_edit.setToolTip(
+            "命令将在目标服务器上执行；执行前可编辑，但必须以 docker pull 开头")
+        pull_btn = QPushButton("在服务器上拉取")
         pull_btn.clicked.connect(self._pull_registry_image)
+        registry_btns = QHBoxLayout()
+        registry_btns.addWidget(pull_btn)
+        registry_btns.addStretch(1)
+        registry_form.addRow("镜像地址", self.registry_ref_edit)
+        registry_form.addRow("", registry_btns)
+        registry_form.addRow("服务器命令（可编辑）", self.pull_command_edit)
+        self.source_stack.addWidget(registry_page)
+        self.registry_ref_edit.textChanged.connect(self._update_pull_command)
+        self.pull_command_edit.textChanged.connect(self._mark_pull_command_dirty)
+
+        check_ucm_btn = QPushButton("✅ 检查所选镜像 UCM")
         check_ucm_btn.clicked.connect(self._check_ucm)
         refresh_btn.setToolTip("重新加载服务器上的 docker images")
-        upload_btn.setToolTip("把本地镜像 tar 包上传到服务器 docker load（可用于导入基础镜像）")
+        upload_btn.setToolTip("上传本地镜像包到服务器并执行 docker load")
         pull_btn.setToolTip(
-            "输入镜像仓库地址，在本地按目标服务器 CPU 架构 docker pull，\n"
-            "导出为 tar.gz 后自动上传到服务器 docker load")
+            "在目标服务器上直接执行 docker pull；本地无需安装 Docker Desktop")
         check_ucm_btn.setToolTip("检查所选基础镜像内是否已安装 UCM（已装可直接跳过构建）")
 
         image_layout = QVBoxLayout(image_box)
         image_layout.addWidget(self.placeholder)
-        img_form = QFormLayout()
-        img_form.addRow("基础镜像", self.image_combo)
-        self.registry_ref_edit = QLineEdit()
-        self.registry_ref_edit.setPlaceholderText(
-            "quay.io/ascend/vllm-ascend:v0.30.0rc2-a5-openeuler")
-        self.registry_ref_edit.setMinimumWidth(420)
-        img_form.addRow("镜像仓库地址", self.registry_ref_edit)
-        image_layout.addLayout(img_form)
-        img_btns = QHBoxLayout()
-        img_btns.addWidget(refresh_btn)
-        img_btns.addWidget(upload_btn)
-        img_btns.addWidget(pull_btn)
-        img_btns.addWidget(check_ucm_btn)
-        img_btns.addStretch(1)
-        image_layout.addLayout(img_btns)
+        source_form = QFormLayout()
+        source_form.addRow("镜像来源", self.source_combo)
+        image_layout.addLayout(source_form)
+        image_layout.addWidget(self.source_stack)
+        self.source_hint = QLabel()
+        self.source_hint.setWordWrap(True)
+        image_layout.addWidget(self.source_hint)
+        source_btns = QHBoxLayout()
+        source_btns.addWidget(check_ucm_btn)
+        source_btns.addStretch(1)
+        image_layout.addLayout(source_btns)
+        self._update_source_hint()
+        self._update_pull_command()
 
         # ---------- 2. 上传安装包
         build_box = QGroupBox("2. 安装包（仅在需要构建新 UCM 镜像时填写）")
@@ -228,7 +288,51 @@ class ImagePage(QWidget):
         else:
             self.platform_label.setText("-（未探测设备，默认按 ascend；建议先在步骤1探测）")
 
+    def _update_source_hint(self) -> None:
+        hints = {
+            0: "已选择服务器已有镜像：只需从列表选择并检查 UCM，无需填写仓库地址或上传镜像包。",
+            1: "离线导入：选择本地 tar/tar.gz 镜像包，上传到服务器并 docker load；适合服务器无法访问镜像仓库。",
+            2: "服务器直连拉取：在目标服务器上执行 docker pull，本地不需要安装 Docker Desktop。",
+        }
+        self.source_hint.setText(hints.get(self.source_combo.currentIndex(), ""))
+
+    def _update_pull_command(self) -> None:
+        if self._updating_pull_command:
+            return
+        server = self.ctx.server
+        ref = self.registry_ref_edit.text().strip()
+        if not ref:
+            self._set_pull_command("")
+            return
+        platform = platform_from_arch(self.ctx.device_of(server).arch) if server else ""
+        command = "docker pull"
+        if platform:
+            command += f" --platform {shq(platform)}"
+        command += f" {shq(ref)}"
+        self._set_pull_command(command)
+
+    def _set_pull_command(self, command: str) -> None:
+        self._updating_pull_command = True
+        try:
+            self.pull_command_edit.setPlainText(command)
+            self._pull_command_dirty = False
+        finally:
+            self._updating_pull_command = False
+
+    def _mark_pull_command_dirty(self) -> None:
+        if not self._updating_pull_command:
+            self._pull_command_dirty = True
+
+    def _select_source(self, index: int) -> None:
+        self.source_combo.setCurrentIndex(index)
+
     def _selected_base(self) -> Optional[str]:
+        if self.source_combo.currentIndex() != 0:
+            QMessageBox.information(
+                self, "请先完成镜像准备",
+                "请先导入本地镜像包或在服务器上拉取镜像。\n"
+                "操作成功后会自动切换回“服务器已有镜像”，再检查 UCM。")
+            return None
         ref = combo_ref(self.image_combo)
         if not ref:
             QMessageBox.warning(
@@ -336,15 +440,10 @@ class ImagePage(QWidget):
         if server is None:
             QMessageBox.information(self, "提示", "请先在步骤1勾选要登录的服务器")
             return
-        from PySide6.QtCore import QSettings
-
-        settings = QSettings("UCM-Deployer", "paths")
-        start = str(settings.value("last_file_dir", ""))
-        path, _ = QFileDialog.getOpenFileName(
-            self, "选择镜像 tar 包", start, "镜像包 (*.tar *.tar.gz *.tgz)")
-        if not path:
+        path = self.tar_path_edit.text().strip()
+        if not path or not os.path.isfile(path):
+            QMessageBox.warning(self, "参数错误", "请先选择有效的镜像 tar/tar.gz 文件")
             return
-        settings.setValue("last_file_dir", os.path.dirname(path))
 
         def fn(ssh, tctx):
             dm = DockerManager(ssh)
@@ -355,6 +454,7 @@ class ImagePage(QWidget):
             if not refs:
                 raise RuntimeError("docker load 未解析出镜像名")
             tctx.log("已加载: " + ", ".join(refs))
+            self.ctx.images[server.id] = refs[0]
             for r in refs:
                 if not any(im.ref == r for im in self._images):
                     self._images.append(image_from_ref(r))
@@ -362,7 +462,9 @@ class ImagePage(QWidget):
         def on_finished(all_ok: bool) -> None:
             if all_ok:
                 self._apply_images()
-                QMessageBox.information(self, "完成", "镜像已上传并加载到服务器")
+                self._select_source(0)
+                QMessageBox.information(
+                    self, "完成", "镜像已导入服务器，并已切换为“服务器已有镜像”。")
 
         self.panel.run_tasks([(server, fn)], "上传镜像", on_finished=on_finished)
 
@@ -378,47 +480,56 @@ class ImagePage(QWidget):
             return
         self.registry_ref_edit.setText(ref)
         device = self.ctx.device_of(server)
+        if not self._pull_command_dirty:
+            self._update_pull_command()
+        command = self.pull_command_edit.toPlainText().strip()
+        try:
+            command_tokens = shlex.split(command)
+        except ValueError:
+            command_tokens = []
+        if (len(command_tokens) < 2
+                or command_tokens[:2] != ["docker", "pull"]):
+            QMessageBox.warning(
+                self, "参数错误", "服务器拉取命令不能为空，且必须以 docker pull 开头")
+            return
+        command = " ".join(shq(token) for token in command_tokens)
 
         def fn(ssh, tctx):
             arch = device.arch or fetch_server_arch(ssh)
             platform = platform_from_arch(arch)
-            if not platform:
+            manager = DockerManager(ssh)
+            if not manager.check_docker():
+                raise RuntimeError("目标服务器 Docker 不可用")
+            tctx.log("$ " + command)
+            tctx.progress(
+                5, f"在服务器上拉取 {ref}"
+                + (f"（{platform}）" if platform else "（服务器本机架构）"))
+            result = ssh.exec_stream(command, on_line=tctx.log, timeout=7200)
+            if not result.ok:
                 raise RuntimeError(
-                    f"无法确定目标服务器 CPU 架构（{arch or '未探测'}），"
-                    "请先在步骤1执行「探测设备」")
-            tctx.progress(2, f"准备按 {platform} 拉取 {ref}")
-            local_tar = pull_image_to_tar(
-                ref, platform=platform,
-                progress=lambda pct, msg: tctx.progress(int(2 + pct * 0.53), msg),
-                log=tctx.log, cancelled=tctx.cancelled)
-            tctx.progress(55, "上传镜像包到服务器")
-            refs = upload_image_tar(
-                ssh, DockerManager(ssh), local_tar,
-                progress=lambda pct, msg: tctx.progress(55 + int(pct * 0.45), msg),
-                log=tctx.log)
-            if not refs:
-                raise RuntimeError("docker load 未解析出镜像名")
-            tctx.log("已加载: " + ", ".join(refs))
-            self.ctx.images[server.id] = refs[0]
-            for loaded_ref in refs:
-                if not any(im.ref == loaded_ref for im in self._images):
-                    self._images.append(image_from_ref(loaded_ref))
-            try:
-                os.remove(local_tar)
-            except OSError:
-                tctx.log(f"⚠ 本地临时镜像包未删除: {local_tar}")
+                    f"服务器 docker pull 失败(退出码 {result.exit_code}): "
+                    f"{(result.stderr or result.stdout).strip()[:400]}")
+            if not manager.image_exists(ref):
+                raise RuntimeError(f"docker pull 成功但未找到镜像 {ref}")
+            tctx.progress(90, "确认服务器镜像列表")
+            self.ctx.images[server.id] = ref
+            if not any(im.ref == ref for im in self._images):
+                self._images.append(image_from_ref(ref))
+            tctx.progress(100, f"镜像已拉取到服务器: {ref}")
 
         def on_finished(all_ok: bool) -> None:
             if not all_ok:
                 return
             self._apply_images()
+            self._select_source(0)
+            self._pull_command_dirty = False
             QMessageBox.information(
                 self, "完成",
-                f"镜像 {ref} 已按目标服务器架构拉取、导出并加载到服务器。\n"
-                "可继续检查镜像内 UCM；若已安装，可直接进入步骤3。")
+                f"镜像 {ref} 已在目标服务器上拉取完成。\n"
+                "已切换为“服务器已有镜像”，可继续检查 UCM。")
 
         self.panel.run_tasks(
-            [(server, fn)], f"拉取并上传镜像（{server.name}）",
+            [(server, fn)], f"服务器拉取镜像（{server.name}）",
             on_finished=on_finished)
 
     def _check_ucm(self) -> None:

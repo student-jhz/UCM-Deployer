@@ -405,6 +405,15 @@ def test_image_page_download_hints(qapp, tmp_path):
     assert "unified-cache-management/releases" in page.toolkit_dl_hint.text()
     assert page.toolkit_dl_hint.openExternalLinks()
     # 镜像仓库拉取入口与“可跳过构建”的流程提示
+    assert page.source_combo.count() == 3
+    assert page.source_combo.currentText() == "服务器已有镜像"
+    assert page.source_stack.currentIndex() == 0
+    assert "无需填写仓库地址" in page.source_hint.text()
+    page.source_combo.setCurrentIndex(2)
+    assert page.source_stack.currentIndex() == 2
+    assert "本地不需要安装 Docker Desktop" in page.source_hint.text()
+    page.source_combo.setCurrentIndex(1)
+    assert page.source_stack.currentIndex() == 1
     assert "quay.io/ascend/vllm-ascend" in page.registry_ref_edit.placeholderText()
     assert "确需制作新 UCM 镜像" in page.hint.text()
     assert "无需填写安装包或构建" in page.hint.text()
@@ -438,6 +447,51 @@ def test_image_page_refresh_populates_combo(qapp, tmp_path, fake_ssh):
     assert combo_ref(page.image_combo) == "ucm-engine:v0.1"
     # 默认镜像名已按所选镜像自动建议（<基础镜像名>:ucm）
     assert page.tag_edit.text().strip() == "ucm-engine:ucm"
+
+
+def test_image_page_pulls_registry_image_on_server(qapp, tmp_path, fake_ssh):
+    """仓库镜像由目标服务器 docker pull，本地无需 Docker，成功后切回已有镜像。"""
+    from ucm_deployer.core.models import DeviceInfo, DeviceType, ServerInfo
+    from ucm_deployer.core.server_registry import ServerRegistry
+    from ucm_deployer.gui.state import AppContext
+    from ucm_deployer.gui.widgets.common import combo_ref
+    from ucm_deployer.gui.widgets.image_page import ImagePage
+
+    fake_ssh.add_default(r"^docker info", stdout="")
+    fake_ssh.add_default(r"^docker pull", stdout="Status: Downloaded\n")
+    fake_ssh.add_default(r"docker image inspect", stdout="")
+    ref = "quay.io/ascend/vllm-ascend:v0.30.0rc2-a5-openeuler"
+
+    ctx = AppContext(ServerRegistry(tmp_path))
+    server = ServerInfo.create(name="n1", host="127.0.0.1")
+    ctx.selected = [server]
+    ctx.devices = {server.id: DeviceInfo(
+        DeviceType.ASCEND, "Ascend950PR", 8, arch="aarch64")}
+    page = ImagePage(ctx)
+    page.registry_ref_edit.setText(ref)
+    page.source_combo.setCurrentIndex(2)
+    assert page.pull_command_edit.toPlainText() == (
+        f"docker pull --platform linux/arm64 {ref}")
+    page._pull_registry_image()
+
+    assert _wait_panel(page.panel, qapp), "服务器拉取镜像任务超时"
+    assert ctx.images[server.id] == ref
+    assert page.source_combo.currentText() == "服务器已有镜像"
+    assert combo_ref(page.image_combo) == ref
+    commands = [c.executed_command for c in fake_ssh.instances[0].channels]
+    pull = [c for c in commands if c.startswith("docker pull")][-1]
+    assert pull == f"docker pull '--platform' linux/arm64 {ref}"
+    assert not any(c.startswith("docker save") for c in commands)
+
+    page.source_combo.setCurrentIndex(2)
+    malicious = f"docker pull --platform linux/arm64 {ref}; touch /tmp/ucm-pwned"
+    page.pull_command_edit.setPlainText(malicious)
+    page._pull_registry_image()
+    assert _wait_panel(page.panel, qapp), "服务器拉取镜像任务超时"
+    commands = [c.executed_command for c in fake_ssh.instances[-1].channels]
+    pull = next(c for c in commands if c.startswith("docker pull"))
+    assert "; touch /tmp/ucm-pwned" not in pull
+    assert f"'{ref};' touch /tmp/ucm-pwned" in pull
 
 
 def test_image_page_tag_suggest_follows_ucm_whl(qapp, tmp_path):
