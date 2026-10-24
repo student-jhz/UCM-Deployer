@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
 from .docker_manager import DockerManager
-from .models import CommandResult
+from .models import CommandResult, UCMInfo
 from .shell import shq
 from .ssh_client import SSHClient
 from ..utils.log import get_logger
@@ -24,6 +24,16 @@ logger = get_logger(__name__)
 _ITEM_RE = re.compile(r"^\[(PASS|WARN|FAIL|INFO|SKIP)\]\s+(\S+)\s*(.*)$")
 # 汇总行：Result: PASSED (with warnings)  |  1 pass, 1 warn, 0 fail
 _SUMMARY_RE = re.compile(r"^Result:\s*(.+?)\s*\|(.*)$")
+_ASCEND_DRIVER_FILE_RE = re.compile(
+    r"(?im)^\s*Version\s*=\s*([^\s#]+)")
+_NPU_SMI_VERSION_RE = re.compile(
+    r"(?im)(?:npu-smi\s+|Version:\s*)(\d+(?:\.[0-9A-Za-z.-]+)+)")
+_NVIDIA_DRIVER_RE = re.compile(r"(?im)^\s*(\d+(?:\.\d+)+)\s*$")
+_FACT_UCM_MARKER = "__DEPLOYER_UCM__"
+_FACT_ASCEND_FILE_MARKER = "__DEPLOYER_ASCEND_DRIVER__"
+_FACT_NPU_SMI_MARKER = "__DEPLOYER_NPU_SMI__"
+_FACT_NVIDIA_MARKER = "__DEPLOYER_NVIDIA_DRIVER__"
+_ASCEND_HDK_THRESHOLD = (25, 2, 0)
 
 # 检查项中文名与排查建议
 _CHECK_ZH = {
@@ -94,6 +104,14 @@ class PrecheckResult:
         return "completed" if self.warn_count else "passed"
 
 
+@dataclass
+class PrecheckFacts:
+    """Deployer 独立探测到的预检事实，用于增强 toolkit 的未知项。"""
+    ucm: UCMInfo = field(default_factory=UCMInfo)
+    driver_version: str = ""
+    driver_source: str = ""
+
+
 def parse_precheck_output(res: CommandResult) -> PrecheckResult:
     """解析 precheck 输出（--no-color 无 ANSI 码）为结构化结果。"""
     result = PrecheckResult(exit_code=res.exit_code, ok=res.exit_code == 0,
@@ -143,6 +161,67 @@ class PrecheckRunner:
                            timeout: float = 120) -> CommandResult:
         return self.ssh.exec(f"docker exec {shq(container)} /bin/bash -c {shq(cmd)}",
                              timeout=timeout)
+
+    def collect_precheck_facts(self, container: str) -> PrecheckFacts:
+        """用多个通用来源探测 UCM 与驱动版本，不绑定单一产品变体。"""
+        probe_cmd = (
+            f"printf '%s\\n' '{_FACT_UCM_MARKER}'; "
+            "(python3 -m pip list --format=freeze 2>/dev/null "
+            "|| pip list --format=freeze 2>/dev/null "
+            "|| pip list 2>/dev/null)"
+            " | grep -iE '^uc[-_.]?manager' | head -3; "
+            f"printf '%s\\n' '{_FACT_ASCEND_FILE_MARKER}'; "
+            "cat /usr/local/Ascend/driver/version.info 2>/dev/null; "
+            f"printf '%s\\n' '{_FACT_NPU_SMI_MARKER}'; "
+            "npu-smi info 2>/dev/null; "
+            f"printf '%s\\n' '{_FACT_NVIDIA_MARKER}'; "
+            "nvidia-smi --query-gpu=driver_version --format=csv,noheader"
+            " 2>/dev/null | head -1"
+        )
+        res = self._exec_in_container(container, probe_cmd, timeout=90)
+        if not (res.stdout or "").strip():
+            return PrecheckFacts()
+
+        sections = self._split_fact_sections(res.stdout)
+        facts = PrecheckFacts(ucm=UCMInfo.from_freeze_output(
+            sections.get(_FACT_UCM_MARKER, "")))
+        ascend_file = sections.get(_FACT_ASCEND_FILE_MARKER, "")
+        npu_smi = sections.get(_FACT_NPU_SMI_MARKER, "")
+        nvidia = sections.get(_FACT_NVIDIA_MARKER, "")
+
+        match = _ASCEND_DRIVER_FILE_RE.search(ascend_file)
+        if match is not None:
+            facts.driver_version = match.group(1)
+            facts.driver_source = "/usr/local/Ascend/driver/version.info"
+        else:
+            match = _NPU_SMI_VERSION_RE.search(npu_smi)
+            if match is not None:
+                facts.driver_version = match.group(1)
+                facts.driver_source = "npu-smi info"
+            else:
+                match = _NVIDIA_DRIVER_RE.search(nvidia)
+                if match is not None:
+                    facts.driver_version = match.group(1)
+                    facts.driver_source = "nvidia-smi"
+        return facts
+
+    @staticmethod
+    def _split_fact_sections(text: str) -> dict:
+        markers = [_FACT_UCM_MARKER, _FACT_ASCEND_FILE_MARKER,
+                   _FACT_NPU_SMI_MARKER, _FACT_NVIDIA_MARKER]
+        positions = []
+        for marker in markers:
+            index = text.find(marker)
+            if index >= 0:
+                positions.append((index, marker))
+        positions.sort()
+        sections = {}
+        for index, (marker_start, marker) in enumerate(positions):
+            content_start = marker_start + len(marker)
+            end = (positions[index + 1][0] if index + 1 < len(positions)
+                   else len(text))
+            sections[marker] = text[content_start:end].strip("\n")
+        return sections
 
     def list_dirs(self, container: str, path: str = "/") -> List[str]:
         """列出容器内某目录下的子目录（GUI 目录浏览数据源，容器内视角）。"""
@@ -298,4 +377,80 @@ class PrecheckRunner:
         if res.exit_code == 2:
             raise PrecheckError(
                 f"precheck 用法错误(退出码 2)：{res.stderr.strip()[:300]}")
-        return parse_precheck_output(res)
+        result = parse_precheck_output(res)
+        if _precheck_needs_facts(result):
+            enhance_precheck_result(result, self.collect_precheck_facts(container))
+        return result
+
+
+def _missing_summary(item: Optional[PrecheckItem]) -> bool:
+    if item is None:
+        return True
+    summary = item.summary.strip().lower()
+    return summary in ("", "-", "?", "none", "unknown", "hdk=?")
+
+
+def _precheck_needs_facts(result: PrecheckResult) -> bool:
+    by_name = {item.name: item for item in result.items}
+    ucm = by_name.get("uc_manager")
+    driver = by_name.get("accelerator_driver")
+    ucm_unknown = ucm is not None and _missing_summary(ucm)
+    driver_unknown = (driver is not None
+                      and (_missing_summary(driver)
+                           or "could not extract" in driver.detail.lower()))
+    return ucm_unknown or driver_unknown
+
+
+def _version_key(version: str) -> tuple:
+    numbers = []
+    for part in re.split(r"[._-]", version):
+        if not part.isdigit():
+            break
+        numbers.append(int(part))
+    return tuple(numbers)
+
+
+def enhance_precheck_result(result: PrecheckResult,
+                            facts: PrecheckFacts) -> PrecheckResult:
+    """用独立探测事实修复 toolkit 对平台变体的未知项，并保留来源信息。"""
+    by_name = {item.name: item for item in result.items}
+    ucm_item = by_name.get("uc_manager")
+    if (facts.ucm.installed and ucm_item is not None
+            and _missing_summary(ucm_item)):
+        ucm_item.status = "INFO"
+        ucm_item.summary = f"{facts.ucm.package}={facts.ucm.version}"
+        source = "[deployer] fact source: pip list"
+        ucm_item.detail = (source + ("\n" + ucm_item.detail
+                                     if ucm_item.detail else ""))
+
+    driver_item = by_name.get("accelerator_driver")
+    if facts.driver_version and driver_item is not None and _missing_summary(driver_item):
+        driver_item.summary = (
+            f"HDK={facts.driver_version}" if "npu-smi" in facts.driver_source
+            or "Ascend" in facts.driver_source
+            else f"driver={facts.driver_version}")
+        source = f"[deployer] fact source: {facts.driver_source}"
+        if "Ascend" in facts.driver_source or "npu-smi" in facts.driver_source:
+            key = _version_key(facts.driver_version)
+            driver_item.status = "PASS" if key > _ASCEND_HDK_THRESHOLD else "WARN"
+            source += f"\nthreshold: HDK > {'.'.join(map(str, _ASCEND_HDK_THRESHOLD))}"
+        elif driver_item.status != "PASS":
+            driver_item.status = "PASS"
+        driver_item.detail = (source + ("\ntoolkit output:\n" + driver_item.detail
+                                        if driver_item.detail else ""))
+    _refresh_precheck_summary(result)
+    return result
+
+
+def _refresh_precheck_summary(result: PrecheckResult) -> None:
+    if not result.summary:
+        return
+    verdict = ("FAILED" if result.failed_count
+               else "PASSED (with warnings)" if result.warn_count
+               else "PASSED")
+    info_count = sum(1 for item in result.items if item.status == "INFO")
+    skip_count = sum(1 for item in result.items if item.status == "SKIP")
+    result.summary = (
+        f"Result: {verdict} |  {result.passed_count} pass, "
+        f"{result.warn_count} warn, {result.failed_count} fail, "
+        f"{skip_count} skip, {info_count} info")

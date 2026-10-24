@@ -229,14 +229,14 @@ class UCMInfo:
 
     @classmethod
     def from_freeze_output(cls, text: str) -> "UCMInfo":
-        """解析 `pip list --format=freeze` 过滤输出（name==version 每行一个）。"""
+        """解析 pip 输出：freeze 的 `name==version` 或列表的 `name  version`。"""
         for line in (text or "").splitlines():
-            name, sep, version = line.partition("==")
-            if not sep:
-                continue
-            name = name.strip()
-            if cls._NAME_RE.match(name):
-                return cls(installed=True, version=version.strip(), package=name)
+            match = re.match(r"(?i)^(uc[-_.]?manager\S*)\s*==\s*(\S+)\s*$", line)
+            if match is None:
+                match = re.match(r"(?i)^(uc[-_.]?manager\S*)\s{2,}(\S+)\s*$", line)
+            if match is not None:
+                return cls(installed=True, version=match.group(2),
+                           package=match.group(1))
         return cls()
 
     def __str__(self) -> str:

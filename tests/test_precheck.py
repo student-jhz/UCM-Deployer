@@ -4,8 +4,10 @@ import re
 
 import pytest
 
-from ucm_deployer.core.models import CommandResult, ServerInfo
-from ucm_deployer.core.precheck import (PrecheckError, PrecheckRunner,
+from ucm_deployer.core.models import CommandResult, ServerInfo, UCMInfo
+from ucm_deployer.core.precheck import (PrecheckError, PrecheckFacts,
+                                        PrecheckRunner,
+                                        enhance_precheck_result,
                                         parse_precheck_output)
 from ucm_deployer.core.ssh_client import SSHClient
 
@@ -29,6 +31,30 @@ SAMPLE_OUTPUT = """UCM environment pre-check
         fix: set --mount-path to the UCM cache mount point
 ──────────────────────────────────────────────────────────────────────────────
 Result: FAILED  |  1 pass, 1 warn, 1 fail, 1 skip, 3 info
+"""
+
+A5_UNKNOWN_OUTPUT = """UCM environment pre-check
+[INFO] serving_stack        vllm=0.26.0, vllm-ascend=0.26.0rc1
+[INFO] uc_manager           -
+[WARN] accelerator_driver   HDK=?
+        threshold: HDK > 25.2.0
+        could not extract an HDK/driver version; heuristic parse found: none
+[PASS] kernel               6.6.0
+[PASS] memory_shm           shm=512.00 GiB (512.00 GiB free)
+[INFO] aio_resources        max-nr=1048576 nr=0 available=1048576
+Result: PASSED (with warnings)  |  2 pass, 1 warn, 0 fail, 0 skip, 3 info
+"""
+
+A5_FACT_OUTPUT = """__DEPLOYER_UCM__
+Package                     Version
+uc-manager-cann910-a5        0.9.0rc1
+ucm-toolkit                  0.9.0rc1
+__DEPLOYER_ASCEND_DRIVER__
+Version=25.6.rc1.b999
+ascendhal_version=7.35.23
+__DEPLOYER_NPU_SMI__
+| npu-smi 25.6.rc1.b999                            Version: 25.6.rc1.b999 |
+__DEPLOYER_NVIDIA_DRIVER__
 """
 
 
@@ -137,6 +163,48 @@ def test_parse_multiline_detail():
     assert item.detail == "threshold: >= 512 GiB\nfix: enlarge /dev/shm"
 
 
+def test_collect_precheck_facts_a5(fake_ssh):
+    ssh = make_ssh(fake_ssh)
+    ssh._client.add(r"__DEPLOYER_UCM__", stdout=A5_FACT_OUTPUT)
+    facts = PrecheckRunner(ssh).collect_precheck_facts("ucm-a5")
+    assert facts.ucm.installed
+    assert facts.ucm.package == "uc-manager-cann910-a5"
+    assert facts.ucm.version == "0.9.0rc1"
+    assert facts.driver_version == "25.6.rc1.b999"
+    assert facts.driver_source == "/usr/local/Ascend/driver/version.info"
+
+
+def test_enhance_precheck_result_a5():
+    result = parse_precheck_output(CommandResult(
+        command="precheck", exit_code=0, stdout=A5_UNKNOWN_OUTPUT))
+    facts = PrecheckFacts(
+        ucm=UCMInfo(installed=True, package="uc-manager-cann910-a5",
+                    version="0.9.0rc1"),
+        driver_version="25.6.rc1.b999",
+        driver_source="/usr/local/Ascend/driver/version.info")
+    enhance_precheck_result(result, facts)
+    by_name = {item.name: item for item in result.items}
+    assert by_name["uc_manager"].summary == "uc-manager-cann910-a5=0.9.0rc1"
+    assert "pip list" in by_name["uc_manager"].detail
+    assert by_name["accelerator_driver"].status == "PASS"
+    assert by_name["accelerator_driver"].summary == "HDK=25.6.rc1.b999"
+    assert "version.info" in by_name["accelerator_driver"].detail
+    assert result.verdict == "passed"
+    assert result.summary == ("Result: PASSED |  3 pass, 0 warn, 0 fail, "
+                              "0 skip, 3 info")
+
+
+def test_enhance_precheck_result_keeps_low_driver_warning():
+    result = parse_precheck_output(CommandResult(
+        command="precheck", exit_code=0, stdout=A5_UNKNOWN_OUTPUT))
+    facts = PrecheckFacts(driver_version="25.1.0",
+                          driver_source="/usr/local/Ascend/driver/version.info")
+    enhance_precheck_result(result, facts)
+    by_name = {item.name: item for item in result.items}
+    assert by_name["accelerator_driver"].status == "WARN"
+    assert by_name["accelerator_driver"].summary == "HDK=25.1.0"
+
+
 # ============================================================ 执行
 def test_run_env_only(fake_ssh):
     """无挂载目录：--skip-bandwidth，不创建/清理子目录。"""
@@ -150,6 +218,19 @@ def test_run_env_only(fake_ssh):
     assert any("ucm-toolkit run precheck --no-color --skip-bandwidth" in c
                for c in cmds)
     assert not any("mkdir -p" in c for c in cmds)
+
+
+def test_run_enhances_unknown_a5_facts(fake_ssh):
+    ssh = make_ssh(fake_ssh)
+    ssh._client.add(r"ucm-toolkit run precheck", stdout=A5_UNKNOWN_OUTPUT)
+    ssh._client.add(r"__DEPLOYER_UCM__", stdout=A5_FACT_OUTPUT)
+    result = PrecheckRunner(ssh).run("ucm-a5", mount_path="",
+                                     skip_bandwidth=True)
+    by_name = {item.name: item for item in result.items}
+    assert by_name["uc_manager"].summary == "uc-manager-cann910-a5=0.9.0rc1"
+    assert by_name["accelerator_driver"].status == "PASS"
+    assert by_name["accelerator_driver"].summary == "HDK=25.6.rc1.b999"
+    assert result.verdict == "passed"
 
 
 def test_list_dirs_uses_container_view(fake_ssh):

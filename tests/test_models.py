@@ -70,6 +70,17 @@ def test_ucm_info_from_freeze_output():
     assert not UCMInfo.from_freeze_output("").installed
 
 
+def test_ucm_info_from_pip_table_output():
+    """兼容 pip list 默认表格输出（用户手动排查时的常见格式）。"""
+    text = ("Package                     Version\n"
+            "uc-manager-cann910-a5        0.9.0rc1\n"
+            "ucm-toolkit                  0.9.0rc1\n")
+    info = UCMInfo.from_freeze_output(text)
+    assert info.installed
+    assert info.package == "uc-manager-cann910-a5"
+    assert info.version == "0.9.0rc1"
+
+
 def test_volume_mount_docker_arg():
     m = VolumeMount("/data/models", "/models", readonly=True)
     assert m.to_docker_arg() == "-v /data/models:/models:ro"
