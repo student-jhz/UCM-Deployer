@@ -47,7 +47,8 @@ def test_ascend_run_command(fake_ssh):
     assert "-v /data/models/DeepSeek:/models:ro" in cmd
     assert "-v /home/user/logs:/logs" in cmd
     assert "--restart=unless-stopped" in cmd
-    assert cmd.rstrip().endswith("bash")
+    assert "--entrypoint /bin/bash" in cmd
+    assert cmd.rstrip().endswith("ucm-vllm:v0.1")
     # 压缩成单行后仍是合法命令
     flat = flatten_command(cmd)
     assert "\\" not in flat
@@ -210,6 +211,25 @@ def test_create_executes_flattened(fake_ssh):
     executed = ssh._client.channels[-1].executed_command
     assert "\n" not in executed and "\\" not in executed
     assert executed.startswith("docker run -itd --name c1")
+    assert "--entrypoint /bin/bash" in executed
+    assert not executed.endswith("bash")
+
+
+def test_create_rejects_missing_shell_entrypoint(fake_ssh):
+    cm, ssh = make_cm(fake_ssh)
+    ssh._client.add(r"^docker run ", stdout="container-id-777\n")
+    with pytest.raises(Exception, match="--entrypoint /bin/bash"):
+        cm.create("docker run -itd --name c1 img:1")
+    assert not ssh._client.channels
+
+
+def test_create_rejects_trailing_bash_argument(fake_ssh):
+    cm, ssh = make_cm(fake_ssh)
+    ssh._client.add(r"^docker run ", stdout="container-id-777\n")
+    with pytest.raises(Exception, match="不得在镜像后追加 bash"):
+        cm.create(
+            "docker run -itd --entrypoint /bin/bash --name c1 img:1 bash")
+    assert not ssh._client.channels
 
 
 def test_list_host_dirs(fake_ssh):

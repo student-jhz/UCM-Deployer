@@ -586,9 +586,11 @@ def test_container_page_per_server_commands(qapp, tmp_path):
     assert cmd1 != cmd2
 
     # 编辑服务器1的命令不影响服务器2
-    page.cmd_edits[s1.id].setPlainText("docker run -itd --name edited img:t1 bash")
+    page.cmd_edits[s1.id].setPlainText(
+        "docker run -itd --entrypoint /bin/bash --name edited img:t1")
     assert page.command_text(s2.id) == cmd2
-    assert page.command_text(s1.id).startswith("docker run -itd --name edited")
+    assert page.command_text(s1.id).startswith(
+        "docker run -itd --entrypoint /bin/bash --name edited")
 
 
 def test_deploy_page_regen_confirm(qapp, tmp_path):

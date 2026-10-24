@@ -12,6 +12,10 @@
 
 v0.3.5 起镜像仓库模式改为**服务器直连拉取**：工具通过 SSH 在目标服务器上执行 `docker pull`，并按已探测架构追加 `--platform`。本地不下载、不导出、不上传镜像包，因此无需安装 Docker Desktop；目标服务器需已安装 Docker 且能访问对应仓库。
 
+## 为什么创建容器后没有启动 vLLM？
+
+这是设计行为。UCM Deployer 只负责创建可预检的 UCM 容器，不部署或启动推理服务。生成的命令固定使用 `--entrypoint /bin/bash` 覆盖镜像默认 ENTRYPOINT，且不在镜像后追加 `bash`；因此不会把 `bash` 误当成 vLLM 模型参数，也不会自动加载模型。
+
 ## 构建成功但提示「未检测到 UCM 安装」？
 
 UCM 包名存在**平台变体**（如 `uc-manager-cann910-a2`）。本工具按 `uc-manager*` 前缀宽泛匹配检测（`pip list | grep`），已覆盖各变体；若仍报错请确认 UCM whl 是否正确安装（可手动验证：`docker run --rm <镜像> pip list | grep uc`）。

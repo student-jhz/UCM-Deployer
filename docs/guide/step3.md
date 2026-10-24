@@ -2,6 +2,8 @@
 
 基于 UCM 镜像创建 UCM 容器：自动探测并映射实际存在的加速卡设备节点与系统资源，配置挂载，生成的 docker run 命令**可编辑后执行**。
 
+工具固定生成 `--entrypoint /bin/bash`，且不在镜像后追加 `bash`。容器只创建并保持在 Bash 交互环境中，**不会启动 vLLM 或其他推理服务**。
+
 ![步骤3 界面](../screenshots/step3-container.png)
 
 ## 操作流程
@@ -42,6 +44,7 @@
     ```bash
     docker run -itd \
         --name ucm-vllm \
+        --entrypoint /bin/bash \
         --net=host --shm-size 512g \
         --device /dev/davinci0 ... --device /dev/davinci7 \
         --device /dev/davinci_manager --device /dev/hisi_hdc \
@@ -58,7 +61,7 @@
         -v /root/.cache:/root/.cache \
         -v /mnt/kvcache:/mnt/kvcache \
         -v /data/models/Qwen3-32B:/models:ro \
-        vllm-ascend-ucm:v0.26.0rc1 bash
+        vllm-ascend-ucm:v0.26.0rc1
     ```
 
 === "GPU（vllm）"
@@ -66,14 +69,15 @@
     ```bash
     docker run -itd \
         --name ucm-vllm \
+        --entrypoint /bin/bash \
         --runtime nvidia --gpus all \
         -p 8000:8000 --ipc=host --shm-size 512g \
         -v /mnt/kvcache:/mnt/kvcache \
         -v /data/models:/models:ro \
-        vllm-openai-ucm:latest bash
+        vllm-openai-ucm:latest
     ```
 
-命令**可编辑**，点「🚀 创建容器」按编辑框内容执行；完成后可点「✅ 检查容器内 UCM」确认。
+命令**可编辑**，点「🚀 创建容器」按编辑框内容执行；执行前会校验命令仍包含 `--entrypoint /bin/bash` 且未在镜像后追加 `bash`。完成后可点「✅ 检查容器内 UCM」确认。
 
 !!! note "下一步"
     容器创建成功后，进入[步骤4 · 环境预检](step4.md)在容器内做部署前检查。

@@ -4,6 +4,7 @@ kvcache 挂载目录文件系统校验、宿主机目录浏览。"""
 from __future__ import annotations
 
 import re
+import shlex
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -152,6 +153,7 @@ class ContainerManager:
         cfg.validate()
         lines = ["docker run -itd"]
         lines.append(f"    --name {shq(cfg.name)}")
+        lines.append("    --entrypoint /bin/bash")
 
         if cfg.device_type == DeviceType.ASCEND:
             # Ascend: --net=host + 全部 davinci 设备 + 驱动/工具挂载
@@ -197,7 +199,6 @@ class ContainerManager:
             if extra.strip():
                 lines.append("    " + extra.strip())
         lines.append(f"    {shq(cfg.image)}")
-        lines.append("    bash")
         return " \\\n".join(lines)
 
     def list_ascend_devices(self) -> List[str]:
@@ -239,9 +240,37 @@ class ContainerManager:
         return selected
 
     # ------------------------------------------------------------ 执行
+    @staticmethod
+    def _validate_shell_entrypoint(command: str) -> None:
+        """确保容器只启动 Bash，不触发镜像默认的推理服务入口。"""
+        flat = flatten_command(command)
+        try:
+            tokens = shlex.split(flat)
+        except ValueError as exc:
+            raise DockerError(f"docker run 命令引号不合法: {exc}") from exc
+
+        entrypoint = ""
+        for index, token in enumerate(tokens):
+            if token == "--entrypoint":
+                if index + 1 >= len(tokens):
+                    break
+                entrypoint = tokens[index + 1]
+            elif token.startswith("--entrypoint="):
+                entrypoint = token.split("=", 1)[1]
+
+        if entrypoint != "/bin/bash":
+            raise DockerError(
+                "创建命令必须包含 --entrypoint /bin/bash，"
+                "以覆盖镜像默认入口并避免启动 vLLM 推理服务")
+        if tokens and tokens[-1] in ("bash", "/bin/bash"):
+            raise DockerError(
+                "创建命令不得在镜像后追加 bash；"
+                "--entrypoint /bin/bash 已保证容器进入 Bash 并保持运行")
+
     def create(self, command: str,
                on_line=None) -> CommandResult:
         """执行（可能被用户编辑过的）docker run 命令。"""
+        self._validate_shell_entrypoint(command)
         flat = flatten_command(command)
         return self.docker.run(flat, on_line=on_line)
 

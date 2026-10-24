@@ -697,6 +697,8 @@ def test_container_page_command_gen(qapp, tmp_path):
 
     cmd = page.command_text()
     assert cmd.startswith("docker run -itd")
+    assert "--entrypoint /bin/bash" in cmd
+    assert not cmd.rstrip().endswith("bash")
     assert "--device /dev/davinci7" in cmd          # 8 卡全量映射
     assert "--device /dev/davinci_manager" in cmd
     assert "--net=host" in cmd
@@ -715,8 +717,10 @@ def test_container_page_command_gen(qapp, tmp_path):
     assert "/dev/devmm_svm" not in cmd
 
     # 命令可直接编辑，创建时按编辑框内容执行
-    page.cmd_edit.setPlainText("docker run -itd --name edited img:t1 bash")
-    assert page.command_text().startswith("docker run -itd --name edited")
+    page.cmd_edit.setPlainText(
+        "docker run -itd --entrypoint /bin/bash --name edited img:t1")
+    assert page.command_text().startswith(
+        "docker run -itd --entrypoint /bin/bash --name edited")
 
     # NVIDIA 设备 -> --runtime nvidia + 端口映射
     ctx.devices = {s1.id: DeviceInfo(DeviceType.NVIDIA, "NVIDIA A800", 8)}
@@ -726,6 +730,8 @@ def test_container_page_command_gen(qapp, tmp_path):
     qapp.processEvents()
     cmd = page.command_text()
     assert "--runtime nvidia" in cmd
+    assert "--entrypoint /bin/bash" in cmd
+    assert not cmd.rstrip().endswith("bash")
     assert "-p 8000:8000" in cmd
     assert "davinci" not in cmd
 

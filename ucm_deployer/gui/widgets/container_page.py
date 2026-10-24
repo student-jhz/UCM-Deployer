@@ -208,6 +208,7 @@ class ContainerPage(QWidget):
             "自动识别服务器卡数并映射全部加速卡：\n"
             "NPU: 全部 /dev/davinci* 设备 + 驱动挂载 + --net=host\n"
             "GPU: --runtime nvidia --gpus all -p 8000:8000\n"
+            "固定 --entrypoint /bin/bash：只创建并保持容器运行，不启动 vLLM\n"
             "命令可编辑，创建容器时按编辑框内容执行。")
 
         cmd_layout = QVBoxLayout(cmd_box)
