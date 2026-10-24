@@ -24,7 +24,7 @@
 
 点「🔍 探测设备」自动识别：
 
-- 设备类型与型号（`npu-smi info` / `nvidia-smi`，如 `Ascend 910B3`）
+- 设备类型与型号（`npu-smi info` / `nvidia-smi`，如 `Ascend 910B3`、`Ascend950PR`）
 - **卡数**（步骤2/3 的设备映射依据）
 - **CPU 架构**（`uname -m`，步骤2 匹配校验依据）
 

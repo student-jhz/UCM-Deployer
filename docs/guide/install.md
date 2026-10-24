@@ -2,7 +2,7 @@
 
 ## 方式一：直接使用 exe（推荐）
 
-从 [Releases](https://github.com/student-jhz/UCM-Deployer/releases) 下载最新的 `UCM-Deployer.exe`，双击即可运行（无需安装 Python）。
+从 [Releases 直接下载最新版 `UCM-Deployer.exe`](https://github.com/student-jhz/UCM-Deployer/releases/latest/download/UCM-Deployer.exe)，双击即可运行（无需安装 Python）。
 
 产物自检（可选）：
 

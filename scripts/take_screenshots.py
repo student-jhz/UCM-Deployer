@@ -101,8 +101,8 @@ def main() -> int:
     # ============================================================ 步骤1
     ctx = win.ctx
     s1 = ServerInfo.create(name="npu-node1", host="10.0.10.11",
-                           remark="910B3 训练机")
-    s1.device = DeviceInfo(DeviceType.ASCEND, "Ascend 910B3", 8, arch="aarch64")
+                           remark="950PR A5 推理机")
+    s1.device = DeviceInfo(DeviceType.ASCEND, "Ascend950PR", 8, arch="aarch64")
     s2 = ServerInfo.create(name="npu-node2", host="10.0.10.12")
     s3 = ServerInfo.create(name="gpu-node1", host="10.0.20.31",
                            username="ubuntu", remark="A800 推理机")
@@ -121,7 +121,7 @@ def main() -> int:
     dlg = ServerEditDialog(win)
     dlg.name_edit.setText("npu-node3")
     dlg.host_edit.setText("10.0.10.13")
-    dlg.remark_edit.setText("新到货 910B3")
+    dlg.remark_edit.setText("新到货 950PR")
     dlg.show()
     app.processEvents()
     shot(dlg, "dialog-add-server")
@@ -147,9 +147,9 @@ def main() -> int:
     ip.wrapt_whl_edit.setText(r"D:\packages\wrapt-1.17.2-cp39-cp39-manylinux2014_aarch64.whl")
     ip.toolkit_edit.setText(r"D:\packages\ucm_toolkit-0.8.0.dev1-py3-none-any.whl")
     ip._suggest_tag_if_empty()
-    ip.match_label.setText("✓ 匹配校验：校验通过：服务器 Ascend 910B3 x8（aarch64）"
+    ip.match_label.setText("✓ 匹配校验：校验通过：服务器 Ascend950PR x8（aarch64）"
                            " 与镜像/安装包匹配\n⚠ 无法从镜像名 repo1 判断平台——（演示略）")
-    ip.match_label.setText("✓ 匹配校验：校验通过：服务器 Ascend 910B3 x8（aarch64）"
+    ip.match_label.setText("✓ 匹配校验：校验通过：服务器 Ascend950PR x8（aarch64）"
                            " 与镜像/安装包匹配")
     goto(1)
     shot(win, "step2-build")
@@ -157,6 +157,29 @@ def main() -> int:
     # ============================================================ 步骤3
     cp = win.container_page
     from ucm_deployer.gui.widgets.common import fill_image_combo
+
+    fs.FakeSSHClient.add_default(
+        r"^for d in /dev/davinci",
+        stdout="\n".join([
+            *[f"/dev/davinci{i}" for i in range(8)],
+            "/dev/davinci_manager", "/dev/hisi_hdc",
+            "/dev/ummu", "/dev/uburma",
+        ]) + "\n",
+    )
+    fs.FakeSSHClient.add_default(
+        r"^for p in",
+        stdout="\n".join([
+            "/usr/local/Ascend/driver",
+            "/etc/ascend_install.info",
+            "/etc/hccl_rootinfo.json",
+            "/etc/hixlep",
+            "/root/.cache",
+            "/usr/local/sbin",
+            "/usr/local/dcmi",
+            "/usr/local/bin/npu-smi",
+            "/usr/lib64",
+        ]) + "\n",
+    )
 
     fill_image_combo(cp.image_combo, ip._images,
                      current="quay.io/ascend/vllm-ascend:v0.26.0rc1")
@@ -171,6 +194,9 @@ def main() -> int:
     cp._extra_add()
     cp.extra_table.item(0, 0).setText("/workspace/logs")
     cp.extra_table.item(0, 1).setText("/logs")
+    cp.ascend_device_label.setText(
+        "Ascend 设备节点：已探测 8 个 davinci 节点、9 个系统挂载；"
+        "仅映射实际存在的资源")
     cp._regen()
     goto(2)
     shot(win, "step3-container")

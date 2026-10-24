@@ -276,7 +276,7 @@ footer {
     <a class="btn btn-primary" href="#quickstart">快速开始</a>
     <a class="btn btn-outline" href="https://github.com/student-jhz/UCM-Deployer/releases/latest/download/UCM-Deployer.exe">下载 EXE</a>
   </div>
-  <p class="meta">当前版本 v0.3.2 · 支持 Ascend NPU · NVIDIA GPU · Linux 服务器 · Docker</p>
+  <p class="meta">当前版本 v0.3.3 · 支持 Ascend NPU · NVIDIA GPU · Linux 服务器 · Docker</p>
 </header>
 
 <div class="container">
@@ -291,7 +291,7 @@ footer {
   </div>
   <div class="cards">
     <div class="card"><h3>凭据复用</h3><p>密码或私钥登录，密码 Fernet 加密保存在本机，下次打开自动复用。</p></div>
-    <div class="card"><h3>设备感知</h3><p>自动识别 Ascend / NVIDIA 型号、卡数与 CPU 架构，并贯穿镜像与容器准备。</p></div>
+    <div class="card"><h3>设备感知</h3><p>自动识别 Ascend / NVIDIA 型号、卡数与 CPU 架构，并按宿主机实际资源生成容器参数。</p></div>
     <div class="card"><h3>镜像导入</h3><p>支持本地 tar 包上传，也支持输入镜像仓库地址，按目标架构拉取后自动导入服务器。</p></div>
     <div class="card"><h3>按需构建</h3><p>仅在基础镜像未安装 UCM 时上传 wrapt、UCM、ucm-toolkit whl 并构建新镜像。</p></div>
     <div class="card"><h3>命令透明</h3><p>所有 Docker 命令先完整展示，允许编辑，再执行，避免黑盒操作。</p></div>
@@ -357,7 +357,7 @@ python -m venv .venv
     <thead><tr><th>探测项</th><th>来源</th><th>用途</th></tr></thead>
     <tbody>
       <tr><td>设备类型与型号</td><td><code>npu-smi info</code> / <code>nvidia-smi</code></td><td>匹配基础镜像平台，生成设备映射</td></tr>
-      <tr><td>卡数</td><td>设备探测结果</td><td>决定步骤 3 全量映射加速卡数量</td></tr>
+      <tr><td>卡数</td><td>设备探测结果</td><td>辅助校验步骤 3 探测到的 davinci 节点数量</td></tr>
       <tr><td>CPU 架构</td><td><code>uname -m</code></td><td>校验 whl 架构，并为镜像仓库拉取选择 linux/amd64 或 linux/arm64</td></tr>
     </tbody>
   </table>
@@ -414,6 +414,7 @@ python -m venv .venv
     若目标容器已安装 UCM，无需重复创建。直接进入步骤 4，刷新容器列表并选择该容器即可开始环境预检。
   </div>
   <h3>容器参数</h3>
+  <p>进入页面后自动探测实际存在的 Ascend 设备节点与系统挂载。兼容 Ascend950PR / A5：缺失 <code>/dev/devmm_svm</code> 时不生成该参数，存在 <code>/dev/ummu</code> 或 <code>/dev/uburma</code> 时自动添加 <code>--privileged=true</code>。</p>
   <table>
     <thead><tr><th>参数</th><th>默认值</th><th>说明</th></tr></thead>
     <tbody>
@@ -433,14 +434,22 @@ python -m venv .venv
     <figcaption>目录浏览器用于选择 KV Cache 与模型挂载路径</figcaption>
   </figure>
   <h3>命令示例</h3>
-  <pre><code># Ascend NPU：全量映射 davinci 设备与驱动
+  <pre><code># Ascend NPU：仅映射实际存在的设备节点与系统资源
 docker run -itd \\
   --name ucm-vllm \\
   --net=host --shm-size 512g \\
   --device /dev/davinci0 --device /dev/davinci1 \\
-  --device /dev/davinci_manager --device /dev/devmm_svm --device /dev/hisi_hdc \\
+  --device /dev/davinci_manager --device /dev/hisi_hdc \\
+  --device /dev/ummu --device /dev/uburma \\
+  --privileged=true \\
+  -v /usr/local/Ascend/driver:/usr/local/Ascend/driver \\
+  -v /etc/ascend_install.info:/etc/ascend_install.info \\
+  -v /etc/hccl_rootinfo.json:/etc/hccl_rootinfo.json \\
+  -v /etc/hixlep:/etc/hixlep \\
   -v /usr/local/dcmi:/usr/local/dcmi \\
-  -v /usr/local/Ascend/driver/lib64/:/usr/local/Ascend/driver/lib64/ \\
+  -v /usr/local/sbin:/usr/local/sbin \\
+  -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \\
+  -v /usr/lib64:/usr/lib64 \\
   -v /mnt/kvcache:/mnt/kvcache \\
   -v /data/models/Qwen3-32B:/models:ro \\
   vllm-ascend-ucm:v0.26.0rc1 bash

@@ -1,6 +1,6 @@
 # 步骤3 · 容器创建
 
-基于 UCM 镜像创建推理容器：自动全量映射加速卡，配置挂载，生成的 docker run 命令**可编辑后执行**。
+基于 UCM 镜像创建 UCM 容器：自动探测并映射实际存在的加速卡设备节点与系统资源，配置挂载，生成的 docker run 命令**可编辑后执行**。
 
 ![步骤3 界面](../screenshots/step3-container.png)
 
@@ -31,7 +31,11 @@
 
 ### 4. 生成 / 执行命令
 
-点「🔁 生成/刷新命令」自动生成 docker run——按探测卡数**全量映射加速卡**：
+点「🔁 生成/刷新命令」自动生成 docker run。对 Ascend 服务器，工具会先探测宿主机实际存在的设备节点与驱动/工具/配置挂载，只生成存在的 `--device` 与 `-v` 参数：
+
+- 兼容 `Ascend950PR` / A5：没有 `/dev/devmm_svm` 时不会生成该参数；
+- 探测到 `/dev/ummu` 或 `/dev/uburma` 时自动添加 `--privileged=true`；
+- 自动包含实际存在的 `/usr/local/Ascend/driver`、`/etc/ascend_install.info`、`/etc/hccl_rootinfo.json`、`/etc/hixlep`、`/usr/local/dcmi`、`/usr/local/sbin`、`/usr/local/bin/npu-smi`、`/usr/lib64`、`/root/.cache` 等挂载。
 
 === "NPU（vllm-ascend）"
 
@@ -40,11 +44,18 @@
         --name ucm-vllm \
         --net=host --shm-size 512g \
         --device /dev/davinci0 ... --device /dev/davinci7 \
-        --device /dev/davinci_manager --device /dev/devmm_svm --device /dev/hisi_hdc \
+        --device /dev/davinci_manager --device /dev/hisi_hdc \
+        --device /dev/ummu --device /dev/uburma \
+        --privileged=true \
+        -v /usr/local/Ascend/driver:/usr/local/Ascend/driver \
+        -v /etc/ascend_install.info:/etc/ascend_install.info \
+        -v /etc/hccl_rootinfo.json:/etc/hccl_rootinfo.json \
+        -v /etc/hixlep:/etc/hixlep \
         -v /usr/local/dcmi:/usr/local/dcmi \
+        -v /usr/local/sbin:/usr/local/sbin \
         -v /usr/local/bin/npu-smi:/usr/local/bin/npu-smi \
-        -v /usr/local/Ascend/driver/lib64/:/usr/local/Ascend/driver/lib64/ \
-        ...（完整驱动挂载） \
+        -v /usr/lib64:/usr/lib64 \
+        -v /root/.cache:/root/.cache \
         -v /mnt/kvcache:/mnt/kvcache \
         -v /data/models/Qwen3-32B:/models:ro \
         vllm-ascend-ucm:v0.26.0rc1 bash

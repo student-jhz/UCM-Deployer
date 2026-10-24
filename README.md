@@ -12,7 +12,7 @@
 
 - **步骤1 服务器管理**：SSH 登录信息本地加密保存/复用；单选登录一台服务器；`npu-smi`/`nvidia-smi` 设备探测（型号/卡数/CPU 架构）
 - **步骤2 镜像准备**：选服务器已有镜像（**关键字筛选**）、上传 tar 包 `docker load`，或输入镜像仓库地址（如 `quay.io/ascend/vllm-ascend:v0.30.0rc2-a5-openeuler`）由本地 Docker **按目标服务器架构拉取**、导出 `tar.gz` 并自动上传加载；已含 UCM 的镜像可直接复用并跳过构建；确需构建时上传 wrapt/UCM/ucm-toolkit whl，构建前自动校验设备平台与架构
-- **步骤3 容器准备**：选 UCM 镜像（**选择时自动校验**镜像内 UCM）；自动识别卡数**全量映射加速卡**（NPU: 全部 davinci 设备 + 驱动挂载 + `--net=host`；GPU: `--runtime nvidia --gpus all -p 8000:8000`）；KV Cache / 模型只读 / 自定义挂载；docker run 命令**可编辑**后执行；已有 UCM 容器可跳过创建
+- **步骤3 容器准备**：选 UCM 镜像（**选择时自动校验**镜像内 UCM）；自动探测宿主机实际存在的 Ascend 设备节点与驱动/工具挂载，兼容 Ascend 950PR/A5（缺失 `/dev/devmm_svm` 时不再生成该参数，存在 `/dev/ummu` 或 `/dev/uburma` 时自动添加 `--privileged=true`）；GPU 使用 `--runtime nvidia --gpus all -p 8000:8000`；KV Cache / 模型只读 / 自定义挂载；docker run 命令**可编辑**后执行；已有 UCM 容器可跳过创建
 - **步骤4 环境预检**：**显式选择目标容器**（刷新 `docker ps -a` 后选择已有容器或输入容器名）；在所选容器内运行 `ucm-toolkit run precheck`（驱动/内核/共享内存/AIO 检查 + **可选挂载目录带宽测试**）；**预检参数可配置**；结果**表格+详情区展示**（PASS/WARN/FAIL/INFO 着色、中文名与排查建议）
 - **工具菜单**：清理指定容器（`docker ps -a` 勾选删除）/ 清理指定镜像（`docker images` 勾选删除），作用于当前登录的服务器
 - 步骤间**自由跳转**（前置条件在操作执行时拦截）；所有生成的命令**先展示、可编辑、再执行**；本工具负责 UCM 安装与环境预检，不负责启动或部署推理服务
@@ -58,7 +58,7 @@ git tag v0.2.0 && git push origin v0.2.0
 
 | 层级 | 手段 | 覆盖 |
 |---|---|---|
-| 单元测试 | `tests/`（FakeSSH 脚本化 paramiko 替身） | SSH/加密/注册表/设备解析/docker 解析/Dockerfile/命令生成/匹配校验 等 85 项 |
+| 单元测试 | `tests/`（FakeSSH 脚本化 paramiko 替身） | SSH/加密/注册表/设备解析/docker 解析/Dockerfile/命令生成/匹配校验 等 150 项 |
 | GUI | offscreen 冒烟 | 三页面实例化、导航守卫、单选、镜像筛选、下载链接、whl 反馈、像素采样断言界面无黑块 |
 | 产物 | `exe --smoke` | 打包后程序自检 |
 
@@ -87,7 +87,7 @@ UCM-Deployer/
 │   │   ├── main_window.py        # 主窗口/导航守卫/状态栏
 │   │   └── theme.py              # QSS 主题 + 图标
 │   └── utils/                    # 日志/路径
-├── tests/                        # 85 项测试（FakeSSH + GUI 冒烟）
+├── tests/                        # 150 项测试（FakeSSH + GUI 冒烟）
 ├── docs/                         # 用户手册 / 架构文档
 ├── scripts/build_exe.ps1         # 打包脚本
 └── ucm_deployer.spec             # PyInstaller 配置

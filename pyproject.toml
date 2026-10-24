@@ -1,6 +1,6 @@
 [project]
 name = "ucm-deployer"
-version = "0.3.2"
+version = "0.3.3"
 description = "UCM (Unified Cache Management) 安装与环境预检工具：镜像准备、容器准备和容器内预检"
 requires-python = ">=3.9"
 

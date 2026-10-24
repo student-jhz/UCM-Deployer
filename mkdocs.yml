@@ -1,5 +1,5 @@
 site_name: UCM Deployer 使用文档
-site_description: UCM (Unified Cache Management) 一键部署工具 —— vLLM / vLLM-Ascend / SGLang 推理容器部署指南
+site_description: UCM 安装与环境预检工具 —— 服务器管理、镜像准备、容器准备与环境预检指南
 site_url: https://student-jhz.github.io/UCM-Deployer/
 repo_url: https://github.com/student-jhz/UCM-Deployer
 repo_name: student-jhz/UCM-Deployer

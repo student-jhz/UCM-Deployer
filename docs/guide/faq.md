@@ -16,6 +16,10 @@ UCM 包名存在**平台变体**（如 `uc-manager-cann910-a2`）。本工具按
 
 按镜像名推断的平台与服务器设备不一致。请更换与服务器设备匹配的基础镜像；若镜像名不含平台关键字（如自定义镜像名），会降级为警告而非错误。
 
+## Ascend 950PR 创建容器时报 `/dev/devmm_svm` 不存在？
+
+这是 A5/950PR 驱动节点差异，不是工具探测失败。v0.3.3 起步骤3 会逐个探测 `/dev/davinci*`、`davinci_manager`、`hisi_hdc`、`devmm_svm`、`ummu`、`uburma`，只映射实际存在的节点；探测到 `ummu` 或 `uburma` 时自动添加 `--privileged=true`。请更新到 v0.3.3 或更新版本，无需手工删除该参数。
+
 ## 容器内 npu-smi 报 rc=172 / `device is used (-8020)`？
 
 NPU 正被其他进程/容器占用（宿主机 `npu-smi info` 可正常查看）。该 WARN 不影响推理与带宽检查，停用占用方后在容器内重跑 `npu-smi info` 即可恢复。
@@ -39,5 +43,5 @@ NPU 正被其他进程/容器占用（宿主机 `npu-smi info` 可正常查看�
 ## 如何在无真实服务器时验证程序？
 
 ```powershell
-.venv\Scripts\python -m pytest    # 145 项自动化测试，无需真实服务器
+.venv\Scripts\python -m pytest    # 150 项自动化测试，无需真实服务器
 ```
