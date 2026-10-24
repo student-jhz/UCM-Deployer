@@ -28,10 +28,10 @@ from .widgets.precheck_page import PrecheckPage
 from .widgets.server_page import ServerPage
 
 _STEPS = [
-    ("步骤1：服务器管理", "登录要部署的服务器，探测设备型号与卡数"),
-    ("步骤2：镜像构建", "基础镜像 + wrapt/UCM/ucm-toolkit 包 → 带 UCM 的镜像"),
-    ("步骤3：容器创建", "docker run（全部加速卡映射 + 模型/kvcache/自定义挂载）"),
-    ("步骤4：环境预检", "容器内运行 ucm-toolkit precheck（环境 + 可选带宽测试）"),
+    ("步骤1：服务器管理", "登录服务器并探测设备型号、卡数与 CPU 架构"),
+    ("步骤2：镜像准备", "复用已含 UCM 的镜像，或按需构建新 UCM 镜像"),
+    ("步骤3：容器准备", "按需创建 UCM 容器；已有容器可直接进入步骤4"),
+    ("步骤4：环境预检", "显式选择容器并运行 UCM 环境预检"),
 ]
 
 
@@ -51,7 +51,7 @@ class MainWindow(QMainWindow):
             40, 40, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         title = QLabel(APP_NAME)
         title.setObjectName("brandTitle")
-        sub = QLabel(f"v{__version__} · UCM 一键部署")
+        sub = QLabel(f"v{__version__} · UCM 安装与环境预检")
         sub.setObjectName("brandSub")
         btext = QVBoxLayout()
         btext.setContentsMargins(0, 0, 0, 0)

@@ -187,6 +187,11 @@ def main() -> int:
 
     # ============================================================ 步骤4
     pp = win.precheck_page
+    pp.container_combo.blockSignals(True)
+    pp.container_combo.clear()
+    pp.container_combo.addItems(["ucm-vllm", "ucm-vllm-old", "sglang-test"])
+    pp.container_combo.setCurrentText("ucm-vllm")
+    pp.container_combo.blockSignals(False)
     pp._refresh_container_label()
     pp.bandwidth_check.setChecked(True)
     pp.mount_edit.setText("/mnt/kvcache")

@@ -96,6 +96,10 @@ class ContainerPage(QWidget):
         self.ucm_check_label.setProperty("role", "hint")
         self.ucm_check_label.setWordWrap(True)
         self.ucm_check_label.setToolTip("选择镜像后自动在服务器上校验镜像内 UCM 安装情况")
+        self.reuse_hint = QLabel(
+            "已有安装 UCM 的容器时，可跳过本页创建操作，直接进入步骤4选择该容器预检。")
+        self.reuse_hint.setProperty("role", "hint")
+        self.reuse_hint.setWordWrap(True)
 
         self.name_edit = QLineEdit("ucm-vllm")
         self.shm_edit = QLineEdit("512g")
@@ -119,6 +123,7 @@ class ContainerPage(QWidget):
         top_layout.setSpacing(4)
         top_layout.addLayout(img_row)
         top_layout.addWidget(self.ucm_check_label)
+        top_layout.addWidget(self.reuse_hint)
         top_layout.addLayout(params_row)
 
         # ---------- 2. 挂载（KV Cache / 模型 / 自定义，合并一个分组）

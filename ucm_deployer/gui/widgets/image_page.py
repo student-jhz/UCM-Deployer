@@ -30,6 +30,7 @@ from ...core.image_builder import (ImageBuildConfig, ImageBuilder,
                                    fetch_server_arch, suggest_tag,
                                    upload_image_tar, validate_build_match,
                                    whl_arch, whl_version)
+from ...core.local_image import platform_from_arch, pull_image_to_tar, validate_image_ref
 from ...core.models import DeviceType, DockerImage
 from ..state import AppContext
 from .common import (ParallelTaskPanel, QuickTask, combo_ref, fill_image_combo,
@@ -60,28 +61,39 @@ class ImagePage(QWidget):
 
         refresh_btn = QPushButton("🔄 刷新镜像列表")
         upload_btn = QPushButton("⬆ 上传镜像 tar/tar.gz")
+        pull_btn = QPushButton("⬇ 拉取镜像并上传")
         check_ucm_btn = QPushButton("✅ 检查所选镜像 UCM")
         refresh_btn.clicked.connect(self._refresh_images)
         upload_btn.clicked.connect(self._upload_tar)
+        pull_btn.clicked.connect(self._pull_registry_image)
         check_ucm_btn.clicked.connect(self._check_ucm)
         refresh_btn.setToolTip("重新加载服务器上的 docker images")
         upload_btn.setToolTip("把本地镜像 tar 包上传到服务器 docker load（可用于导入基础镜像）")
+        pull_btn.setToolTip(
+            "输入镜像仓库地址，在本地按目标服务器 CPU 架构 docker pull，\n"
+            "导出为 tar.gz 后自动上传到服务器 docker load")
         check_ucm_btn.setToolTip("检查所选基础镜像内是否已安装 UCM（已装可直接跳过构建）")
 
         image_layout = QVBoxLayout(image_box)
         image_layout.addWidget(self.placeholder)
         img_form = QFormLayout()
         img_form.addRow("基础镜像", self.image_combo)
+        self.registry_ref_edit = QLineEdit()
+        self.registry_ref_edit.setPlaceholderText(
+            "quay.io/ascend/vllm-ascend:v0.30.0rc2-a5-openeuler")
+        self.registry_ref_edit.setMinimumWidth(420)
+        img_form.addRow("镜像仓库地址", self.registry_ref_edit)
         image_layout.addLayout(img_form)
         img_btns = QHBoxLayout()
         img_btns.addWidget(refresh_btn)
         img_btns.addWidget(upload_btn)
+        img_btns.addWidget(pull_btn)
         img_btns.addWidget(check_ucm_btn)
         img_btns.addStretch(1)
         image_layout.addLayout(img_btns)
 
         # ---------- 2. 上传安装包
-        build_box = QGroupBox("2. 安装包（上传到服务器，随镜像一起构建）")
+        build_box = QGroupBox("2. 安装包（仅在需要构建新 UCM 镜像时填写）")
         self.wrapt_whl_edit = QLineEdit()
         self.ucm_whl_edit = QLineEdit()
         self.toolkit_edit = QLineEdit()
@@ -173,8 +185,9 @@ class ImagePage(QWidget):
         build_btn.clicked.connect(self._build)
 
         self.hint = QLabel(
-            "构建在服务器上执行：上传三个包 -> 生成 Dockerfile -> docker build -> 校验 UCM 安装。"
-            "若所选基础镜像已安装 UCM，可点「检查所选镜像 UCM」后直接进入步骤3。")
+            "若基础镜像已安装 UCM，无需填写安装包或构建：点「检查所选镜像 UCM」确认后直接进入步骤3。\n"
+            "仅在确需制作新 UCM 镜像时填写下方安装包；构建会执行：上传三个包 -> "
+            "生成 Dockerfile -> docker build -> 校验 UCM 安装。")
         self.hint.setWordWrap(True)
 
         self.panel = ParallelTaskPanel()
@@ -352,6 +365,61 @@ class ImagePage(QWidget):
                 QMessageBox.information(self, "完成", "镜像已上传并加载到服务器")
 
         self.panel.run_tasks([(server, fn)], "上传镜像", on_finished=on_finished)
+
+    def _pull_registry_image(self) -> None:
+        server = self.ctx.server
+        if server is None:
+            QMessageBox.information(self, "提示", "请先在步骤1勾选要登录的服务器")
+            return
+        try:
+            ref = validate_image_ref(self.registry_ref_edit.text())
+        except Exception as exc:
+            QMessageBox.warning(self, "参数错误", str(exc))
+            return
+        self.registry_ref_edit.setText(ref)
+        device = self.ctx.device_of(server)
+
+        def fn(ssh, tctx):
+            arch = device.arch or fetch_server_arch(ssh)
+            platform = platform_from_arch(arch)
+            if not platform:
+                raise RuntimeError(
+                    f"无法确定目标服务器 CPU 架构（{arch or '未探测'}），"
+                    "请先在步骤1执行「探测设备」")
+            tctx.progress(2, f"准备按 {platform} 拉取 {ref}")
+            local_tar = pull_image_to_tar(
+                ref, platform=platform,
+                progress=lambda pct, msg: tctx.progress(int(2 + pct * 0.53), msg),
+                log=tctx.log, cancelled=tctx.cancelled)
+            tctx.progress(55, "上传镜像包到服务器")
+            refs = upload_image_tar(
+                ssh, DockerManager(ssh), local_tar,
+                progress=lambda pct, msg: tctx.progress(55 + int(pct * 0.45), msg),
+                log=tctx.log)
+            if not refs:
+                raise RuntimeError("docker load 未解析出镜像名")
+            tctx.log("已加载: " + ", ".join(refs))
+            self.ctx.images[server.id] = refs[0]
+            for loaded_ref in refs:
+                if not any(im.ref == loaded_ref for im in self._images):
+                    self._images.append(image_from_ref(loaded_ref))
+            try:
+                os.remove(local_tar)
+            except OSError:
+                tctx.log(f"⚠ 本地临时镜像包未删除: {local_tar}")
+
+        def on_finished(all_ok: bool) -> None:
+            if not all_ok:
+                return
+            self._apply_images()
+            QMessageBox.information(
+                self, "完成",
+                f"镜像 {ref} 已按目标服务器架构拉取、导出并加载到服务器。\n"
+                "可继续检查镜像内 UCM；若已安装，可直接进入步骤3。")
+
+        self.panel.run_tasks(
+            [(server, fn)], f"拉取并上传镜像（{server.name}）",
+            on_finished=on_finished)
 
     def _check_ucm(self) -> None:
         server = self.ctx.server

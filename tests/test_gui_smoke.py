@@ -404,6 +404,10 @@ def test_image_page_download_hints(qapp, tmp_path):
     # ucm-toolkit 下载指引：与 UCM 同站点（GitHub Releases）
     assert "unified-cache-management/releases" in page.toolkit_dl_hint.text()
     assert page.toolkit_dl_hint.openExternalLinks()
+    # 镜像仓库拉取入口与“可跳过构建”的流程提示
+    assert "quay.io/ascend/vllm-ascend" in page.registry_ref_edit.placeholderText()
+    assert "确需制作新 UCM 镜像" in page.hint.text()
+    assert "无需填写安装包或构建" in page.hint.text()
 
 
 def test_image_page_refresh_populates_combo(qapp, tmp_path, fake_ssh):
@@ -645,7 +649,7 @@ def test_precheck_page_intercepts_and_labels(qapp, tmp_path):
     s = ServerInfo.create(name="n1", host="127.0.0.1")
     ctx.selected = [s]
     page.on_enter()
-    assert "未创建" in page.container_label.text()
+    assert "未选择" in page.container_label.text()
     page._run()      # 未建容器 -> 提示（自动应答）后返回
     qapp.processEvents()
     assert page.result_table.rowCount() == 0
@@ -670,6 +674,48 @@ def test_precheck_page_intercepts_and_labels(qapp, tmp_path):
     qapp.processEvents()
     assert not page.mount_edit.isEnabled()
     assert page.mount_edit.text() == ""
+
+
+def test_precheck_page_explicitly_selects_existing_container(qapp, tmp_path, fake_ssh):
+    """步骤4：显式刷新并选择已有容器，预检命令使用所选容器。"""
+    import time as _t
+
+    from ucm_deployer.core.models import ServerInfo
+    from ucm_deployer.core.server_registry import ServerRegistry
+    from ucm_deployer.gui.state import AppContext
+    from ucm_deployer.gui.widgets.precheck_page import PrecheckPage
+
+    fake_ssh.add_default(
+        r"^docker ps -a",
+        stdout="id1\texisting-ucm\tvllm-ascend-ucm:v0.30.0\tUp 2 hours\n"
+               "id2\tnew-ucm\tvllm-ascend-ucm:v0.30.0\tUp 1 minute\n")
+    fake_ssh.add_default(r"ucm-toolkit run precheck",
+                         stdout="[PASS] kernel  5.10.0\n"
+                                "Result: PASSED  |  1 pass, 0 warn, 0 fail\n")
+
+    ctx = AppContext(ServerRegistry(tmp_path))
+    server = ServerInfo.create(name="n1", host="127.0.0.1")
+    ctx.selected = [server]
+    page = PrecheckPage(ctx)
+    page.on_enter()
+    deadline = _t.time() + 15
+    while page._quick_tasks and _t.time() < deadline:
+        qapp.processEvents()
+        _t.sleep(0.05)
+    qapp.processEvents()
+
+    assert [page.container_combo.itemText(i)
+            for i in range(page.container_combo.count())] == ["existing-ucm", "new-ucm"]
+    page.container_combo.setCurrentText("new-ucm")
+    assert ctx.containers[server.id] == "new-ucm"
+    page.bandwidth_check.setChecked(False)
+    page._run()
+    assert _wait_panel(page.panel, qapp), "预检任务超时"
+    qapp.processEvents()
+
+    cmds = [c.executed_command for inst in fake_ssh.instances for c in inst.channels]
+    assert any("docker exec new-ucm ucm-toolkit run precheck" in cmd
+               for cmd in cmds)
 
 
 def test_precheck_page_runs_and_shows_result(qapp, tmp_path, fake_ssh):

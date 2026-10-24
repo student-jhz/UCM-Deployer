@@ -14,6 +14,7 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
+    QComboBox,
     QDialog,
     QGroupBox,
     QHBoxLayout,
@@ -30,6 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...core.precheck import CONFIG_CONTAINER_PATH, PrecheckRunner
+from ...core.docker_manager import DockerManager
 from ...core.ssh_client import SSHClient
 from ..state import AppContext
 from .common import ParallelTaskPanel, QuickTask, RemoteDirDialog
@@ -54,7 +56,15 @@ class PrecheckPage(QWidget):
 
         # ---------- 预检参数
         cfg_box = QGroupBox("1. 预检参数")
-        self.container_label = QLabel("目标容器：未创建（请先在步骤3创建容器）")
+        self.container_combo = QComboBox()
+        self.container_combo.setEditable(True)
+        self.container_combo.setMinimumWidth(360)
+        self.container_combo.setPlaceholderText("选择或输入要预检的容器名")
+        self.container_combo.currentTextChanged.connect(self._on_container_changed)
+        refresh_container_btn = QPushButton("🔄 刷新容器")
+        refresh_container_btn.clicked.connect(self._refresh_containers)
+        refresh_container_btn.setToolTip("读取服务器 docker ps -a，可选择已有容器")
+        self.container_label = QLabel("目标容器：未选择")
         self.container_label.setProperty("role", "hint")
 
         self.bandwidth_check = QCheckBox("执行存储带宽检查")
@@ -95,6 +105,11 @@ class PrecheckPage(QWidget):
 
         cfg_layout = QVBoxLayout(cfg_box)
         cfg_layout.setSpacing(4)
+        container_row = QHBoxLayout()
+        container_row.addWidget(QLabel("目标容器"), 0)
+        container_row.addWidget(self.container_combo, 1)
+        container_row.addWidget(refresh_container_btn)
+        cfg_layout.addLayout(container_row)
         cfg_layout.addWidget(self.container_label)
         cfg_layout.addWidget(self.bandwidth_check)
         mount_row = QHBoxLayout()
@@ -168,9 +183,56 @@ class PrecheckPage(QWidget):
         task.start()
 
     def on_enter(self) -> None:
+        server = self.ctx.server
+        current = self.ctx.containers.get(server.id, "") if server else ""
+        if current and not self._selected_container():
+            self.container_combo.blockSignals(True)
+            self.container_combo.setCurrentText(current)
+            self.container_combo.blockSignals(False)
         self._refresh_container_label()
+        self._refresh_containers()
         self._on_bandwidth_toggled()
         self._refresh_config_status()
+
+    def _on_container_changed(self, text: str) -> None:
+        container = text.strip()
+        server = self.ctx.server
+        if server is not None and container:
+            self.ctx.containers[server.id] = container
+        self._refresh_container_label()
+        self._refresh_config_status()
+
+    def _selected_container(self) -> str:
+        return self.container_combo.currentText().strip()
+
+    def _refresh_containers(self) -> None:
+        server = self.ctx.server
+        if server is None:
+            self.container_combo.blockSignals(True)
+            self.container_combo.clear()
+            self.container_combo.blockSignals(False)
+            self._refresh_container_label()
+            return
+
+        def fn():
+            with SSHClient(server) as ssh:
+                return DockerManager(ssh).list_containers(all_states=True)
+
+        def on_done(containers, error):
+            names = [c.get("names", "") for c in (containers or [])
+                     if c.get("names")]
+            current = self.ctx.containers.get(server.id, "")
+            self.container_combo.blockSignals(True)
+            self.container_combo.clear()
+            if current and current not in names:
+                names.insert(0, current)
+            self.container_combo.addItems(names)
+            if current:
+                self.container_combo.setCurrentText(current)
+            self.container_combo.blockSignals(False)
+            self._refresh_container_label()
+
+        self._run_quick(fn, on_done)
 
     def _on_bandwidth_toggled(self, *_) -> None:
         """带宽检查开关：关闭时挂载目录不可用（免填）。"""
@@ -182,7 +244,7 @@ class PrecheckPage(QWidget):
     def _refresh_config_status(self) -> None:
         """后台探测容器内自定义配置是否存在（应对容器重建/手动删除）。"""
         server = self.ctx.server
-        container = self.ctx.containers.get(server.id) if server else None
+        container = self._selected_container()
         if server is None or not container:
             self._custom_config = False
             self.config_status_label.setText("预检参数：出厂默认")
@@ -209,7 +271,7 @@ class PrecheckPage(QWidget):
         if server is None:
             QMessageBox.information(self, "提示", "请先在步骤1勾选要登录的服务器")
             return
-        container = self.ctx.containers.get(server.id)
+        container = self._selected_container()
         if not container:
             QMessageBox.information(
                 self, "提示", "请先在步骤3创建容器，再配置预检参数。")
@@ -220,12 +282,13 @@ class PrecheckPage(QWidget):
 
     def _refresh_container_label(self) -> None:
         server = self.ctx.server
-        name = self.ctx.containers.get(server.id) if server else None
+        name = self._selected_container()
         if name:
             self.container_label.setText(
-                f"目标容器：{name}（在步骤3创建；预检将在该容器内执行）")
+                f"目标容器：{name}（预检将显式在该容器内执行）")
         elif server:
-            self.container_label.setText("目标容器：未创建（请先在步骤3创建容器）")
+            self.container_label.setText(
+                "目标容器：未选择（可刷新后选择已有容器，或回步骤3创建）")
         else:
             self.container_label.setText("未登录服务器（请先在步骤1勾选）")
 
@@ -234,7 +297,7 @@ class PrecheckPage(QWidget):
         if server is None:
             QMessageBox.information(self, "提示", "请先在步骤1勾选要登录的服务器")
             return
-        container = self.ctx.containers.get(server.id)
+        container = self._selected_container()
         if not container:
             QMessageBox.information(
                 self, "提示", "请先在步骤3创建容器，再选择容器内挂载目录。")
@@ -257,7 +320,7 @@ class PrecheckPage(QWidget):
         if server is None:
             QMessageBox.information(self, "提示", "请先在步骤1勾选要登录的服务器")
             return
-        container = self.ctx.containers.get(server.id)
+        container = self._selected_container()
         if not container:
             QMessageBox.information(
                 self, "提示", "请先在步骤3创建容器，再执行环境预检。")
