@@ -57,6 +57,28 @@ __DEPLOYER_NPU_SMI__
 __DEPLOYER_NVIDIA_DRIVER__
 """
 
+CUDA_UNKNOWN_OUTPUT = """UCM environment pre-check
+[INFO] serving_stack        vllm=0.31.0
+[INFO] uc_manager           -
+[PASS] accelerator_driver   compute_cap=9.0
+        threshold: compute_cap >= 8.0
+[PASS] kernel               5.15.0
+        threshold: >= 5.10
+[PASS] memory_shm           shm=1007.82 GiB (1007.82 GiB free)
+        threshold: >= 512 GiB
+[INFO] aio_resources        max-nr=65536 nr=0 available=65536 max_aio_workers=16
+Result: PASSED  |  3 pass, 0 warn, 0 fail, 0 skip, 3 info
+"""
+
+CUDA_FACT_OUTPUT = """__DEPLOYER_UCM__
+uc-manager-cuda-cu129==0.9.0rc3
+ucm-toolkit==0.9.0rc1
+__DEPLOYER_ASCEND_DRIVER__
+__DEPLOYER_NPU_SMI__
+__DEPLOYER_NVIDIA_DRIVER__
+550.54.15
+"""
+
 
 def make_ssh(fake_ssh) -> SSHClient:
     ssh = SSHClient(ServerInfo.create(name="s", host="127.0.0.1"))
@@ -174,6 +196,17 @@ def test_collect_precheck_facts_a5(fake_ssh):
     assert facts.driver_source == "/usr/local/Ascend/driver/version.info"
 
 
+def test_collect_precheck_facts_cuda(fake_ssh):
+    ssh = make_ssh(fake_ssh)
+    ssh._client.add(r"__DEPLOYER_UCM__", stdout=CUDA_FACT_OUTPUT)
+    facts = PrecheckRunner(ssh).collect_precheck_facts("ucm-cuda")
+    assert facts.ucm.installed
+    assert facts.ucm.package == "uc-manager-cuda-cu129"
+    assert facts.ucm.version == "0.9.0rc3"
+    assert facts.driver_version == "550.54.15"
+    assert facts.driver_source == "nvidia-smi"
+
+
 def test_enhance_precheck_result_a5():
     result = parse_precheck_output(CommandResult(
         command="precheck", exit_code=0, stdout=A5_UNKNOWN_OUTPUT))
@@ -192,6 +225,19 @@ def test_enhance_precheck_result_a5():
     assert result.verdict == "passed"
     assert result.summary == ("Result: PASSED |  3 pass, 0 warn, 0 fail, "
                               "0 skip, 3 info")
+
+
+def test_run_enhances_unknown_cuda_ucm(fake_ssh):
+    ssh = make_ssh(fake_ssh)
+    ssh._client.add(r"ucm-toolkit run precheck", stdout=CUDA_UNKNOWN_OUTPUT)
+    ssh._client.add(r"__DEPLOYER_UCM__", stdout=CUDA_FACT_OUTPUT)
+    result = PrecheckRunner(ssh).run("ucm-cuda", mount_path="",
+                                     skip_bandwidth=True)
+    by_name = {item.name: item for item in result.items}
+    assert by_name["uc_manager"].summary == "uc-manager-cuda-cu129=0.9.0rc3"
+    assert "pip list" in by_name["uc_manager"].detail
+    assert by_name["accelerator_driver"].summary == "compute_cap=9.0"
+    assert result.verdict == "passed"
 
 
 def test_enhance_precheck_result_keeps_low_driver_warning():

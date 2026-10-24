@@ -65,6 +65,12 @@ def test_ucm_info_from_freeze_output():
     assert variant.package == "uc-manager-cann910-a2"
     assert "uc-manager-cann910-a2" in str(variant)
 
+    cuda_variant = UCMInfo.from_freeze_output(
+        "uc-manager-cuda-cu129==0.9.0rc3\n")
+    assert cuda_variant.installed
+    assert cuda_variant.package == "uc-manager-cuda-cu129"
+    assert cuda_variant.version == "0.9.0rc3"
+
     # 其他包不误报
     assert not UCMInfo.from_freeze_output("numpy==1.26.0\n").installed
     assert not UCMInfo.from_freeze_output("").installed
@@ -79,6 +85,16 @@ def test_ucm_info_from_pip_table_output():
     assert info.installed
     assert info.package == "uc-manager-cann910-a5"
     assert info.version == "0.9.0rc1"
+
+
+def test_ucm_info_from_cuda_pip_table_output():
+    text = ("Package                     Version\n"
+            "uc-manager-cuda-cu129        0.9.0rc3\n"
+            "ucm-toolkit                  0.9.0rc1\n")
+    info = UCMInfo.from_freeze_output(text)
+    assert info.installed
+    assert info.package == "uc-manager-cuda-cu129"
+    assert info.version == "0.9.0rc3"
 
 
 def test_volume_mount_docker_arg():
