@@ -58,7 +58,7 @@ git tag v0.2.0 && git push origin v0.2.0
 
 | 层级 | 手段 | 覆盖 |
 |---|---|---|
-| 单元测试 | `tests/`（FakeSSH 脚本化 paramiko 替身） | SSH/加密/注册表/设备解析/docker 解析/Dockerfile/命令生成/匹配校验 等 159 项 |
+| 单元测试 | `tests/`（FakeSSH 脚本化 paramiko 替身） | SSH/加密/注册表/设备解析/docker 解析/Dockerfile/命令生成/匹配校验 等 169 项 |
 | GUI | offscreen 冒烟 | 三页面实例化、导航守卫、单选、镜像筛选、下载链接、whl 反馈、像素采样断言界面无黑块 |
 | 产物 | `exe --smoke` | 打包后程序自检 |
 
@@ -87,7 +87,7 @@ UCM-Deployer/
 │   │   ├── main_window.py        # 主窗口/导航守卫/状态栏
 │   │   └── theme.py              # QSS 主题 + 图标
 │   └── utils/                    # 日志/路径
-├── tests/                        # 159 项测试（FakeSSH + GUI 冒烟）
+├── tests/                        # 169 项测试（FakeSSH + GUI 冒烟）
 ├── docs/                         # 用户手册 / 架构文档
 ├── scripts/build_exe.ps1         # 打包脚本
 └── ucm_deployer.spec             # PyInstaller 配置

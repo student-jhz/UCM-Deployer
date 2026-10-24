@@ -55,5 +55,5 @@ NPU 正被其他进程/容器占用（宿主机 `npu-smi info` 可正常查看�
 ## 如何在无真实服务器时验证程序？
 
 ```powershell
-.venv\Scripts\python -m pytest    # 159 项自动化测试，无需真实服务器
+.venv\Scripts\python -m pytest    # 169 项自动化测试，无需真实服务器
 ```
