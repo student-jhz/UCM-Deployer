@@ -228,15 +228,16 @@ def main() -> int:
     pp._result_items = []
     sample = PrecheckResult(
         exit_code=0, ok=True,
-        summary="Result: PASSED (with warnings) |  2 pass, 2 warn, 0 fail, 0 skip, 3 info",
+        summary="Result: PASSED (with warnings) |  3 pass, 1 warn, 0 fail, 0 skip, 3 info",
         items=[
             PrecheckItem("INFO", "serving_stack", "vllm=0.26.0, vllm-ascend=0.26.0rc1",
                          name_zh="服务栈版本", advice="信息项：记录 vLLM / vLLM-Ascend / SGLang 实际安装版本，仅展示。"),
-            PrecheckItem("INFO", "uc_manager", "uc-manager-cann910-a2=0.8.1",
+            PrecheckItem("INFO", "uc_manager", "uc-manager-cann910-a5=0.9.0rc1",
+                         detail="[deployer] fact source: pip list",
                          name_zh="UCM 安装版本", advice="信息项：记录 uc-manager（含平台变体包）实际安装版本，仅展示。"),
-            PrecheckItem("WARN", "accelerator_driver", "-",
-                         detail="threshold: HDK > 25.2.0\nnpu-smi info failed: rc=172\n"
-                                "fix: ensure the Ascend driver is loaded and npu-smi is on PATH",
+            PrecheckItem("PASS", "accelerator_driver", "HDK=25.6.rc1.b999",
+                         detail="[deployer] fact source: /usr/local/Ascend/driver/version.info\n"
+                                "threshold: HDK > 25.2.0",
                          name_zh="加速器驱动",
                          advice="在宿主机运行 npu-smi info / nvidia-smi 确认驱动正常；容器内报 "
                                 "'device is used (-8020)' 或 rc=172 通常为 NPU 正被其他进程/容器占用，"

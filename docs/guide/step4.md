@@ -2,6 +2,8 @@
 
 在**已创建的容器内**运行 `ucm-toolkit run precheck`，提前发现可能影响启动或缓存读写的问题。
 
+如果 toolkit 输出 `uc_manager -` 或 `HDK=?`，Deployer 不会直接放弃识别，而会在容器内独立探测事实来源：pip 包元数据（兼容 `uc-manager-cann910-a5` 等平台变体）、`/usr/local/Ascend/driver/version.info`、`npu-smi info`、`nvidia-smi`。补齐后的结果会在详情中标注 `[deployer] fact source`，不隐藏 toolkit 原始输出。
+
 ![步骤4 界面](../screenshots/step4-precheck.png)
 
 ## 操作流程
@@ -36,8 +38,8 @@
 
 | 检查项 | 默认阈值/行为 |
 |---|---|
-| 服务栈版本 / UCM 版本 / AIO 资源 | INFO，仅展示 |
-| 加速器驱动 | 缺失失败；Ascend HDK > 25.2.0，较低警告 |
+| 服务栈版本 / UCM 版本 / AIO 资源 | INFO，仅展示；UCM 版本支持 pip 多格式与平台变体识别 |
+| 加速器驱动 | 缺失失败；Ascend HDK > 25.2.0，较低警告；支持 `version.info` / `npu-smi` / `nvidia-smi` 补齐 |
 | 内核 | ≥ 5.10 |
 | 共享内存 /dev/shm | < 512 GiB 警告 |
 | 存储带宽 | 最佳组合聚合带宽 < 8 GB/s 警告 |
