@@ -5,6 +5,8 @@ from ucm_deployer.core.image_builder import (
     BuildCancelled,
     ImageBuildConfig,
     ImageBuilder,
+    ImageRuntimeInfo,
+    fetch_image_runtime_info,
     generate_dockerfile,
     image_platform,
     suggest_tag,
@@ -72,7 +74,7 @@ def test_whl_arch():
 def test_match_ok():
     dev = DeviceInfo(DeviceType.ASCEND, "Ascend 910B3", 8, arch="aarch64")
     r = validate_build_match(
-        dev, "aarch64", "quay.io/ascend/vllm-ascend:v0.23.0-a3",
+        dev, "aarch64", "quay.io/ascend/vllm-ascend:v0.23.0-a2",
         "/tmp/uc_manager-0.2.1-py3-none-any.whl",
         "/tmp/wrapt-1.17.2-cp39-cp39-manylinux2014_aarch64.whl")
     assert r.ok
@@ -108,7 +110,7 @@ def test_match_no_device():
 def test_match_unknown_image_warns():
     dev = DeviceInfo(DeviceType.ASCEND, "Ascend 910B3", 8)
     r = validate_build_match(dev, "aarch64", "my-custom-engine:1",
-                             "/tmp/uc.whl", "")
+                             "/tmp/uc_manager-0.2.1-py3-none-any.whl", "")
     assert r.ok
     assert any("无法从镜像名" in w for w in r.warnings)
 
@@ -116,9 +118,116 @@ def test_match_unknown_image_warns():
 def test_match_no_arch_skips_whl_check():
     dev = DeviceInfo(DeviceType.NVIDIA, "NVIDIA A800", 8)
     r = validate_build_match(dev, "", "vllm/vllm-openai:latest",
-                             "/tmp/uc.whl", "/tmp/wrapt-x86_64.whl")
+                             "/tmp/uc_manager-0.2.1-py3-none-any.whl",
+                             "/tmp/wrapt-1.0-py3-none-any.whl")
     assert r.ok  # 无架构信息时跳过 whl 校验（仅警告）
     assert any("跳过" in w for w in r.warnings)
+
+
+def test_match_a5_runtime_with_exact_wheels():
+    device = DeviceInfo(DeviceType.ASCEND, "Ascend950PR", 8, arch="aarch64")
+    runtime = ImageRuntimeInfo(
+        python_version="3.12", python_abi="cp312", arch="aarch64",
+        glibc_version="2.34", cann_version="9.2", variant="a5",
+        probe_ok=True)
+    result = validate_build_match(
+        device, "aarch64", "quay.io/ascend/vllm-ascend:v0.30.0rc2-a5",
+        "/tmp/uc_manager_cann920_a5-0.9.0rc3-cp312-cp312-manylinux_2_34_aarch64.whl",
+        "/tmp/wrapt-1.17.2-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+        image_runtime=runtime,
+        toolkit_whl="/tmp/ucm_toolkit-0.9.0rc3-py3-none-any.whl")
+    assert result.ok, result.errors
+    assert "Python 3.12" in result.message
+    assert "CANN 9.2" in result.message
+    assert "A5" in result.message
+
+
+def test_match_rejects_python_variant_and_glibc_mismatch():
+    device = DeviceInfo(DeviceType.ASCEND, "Ascend950PR", 8, arch="aarch64")
+    runtime = ImageRuntimeInfo(
+        python_version="3.12", python_abi="cp312", arch="aarch64",
+        glibc_version="2.28", cann_version="9.2", variant="a5",
+        probe_ok=True)
+    result = validate_build_match(
+        device, "aarch64", "quay.io/ascend/vllm-ascend:v0.30.0rc2-a5",
+        "/tmp/uc_manager_cann900_a2-0.9.0rc3-cp311-cp311-manylinux_2_34_aarch64.whl",
+        "/tmp/wrapt-1.17.2-cp312-cp312-manylinux_2_17_aarch64.whl",
+        image_runtime=runtime)
+    assert not result.ok
+    assert any("Python 标记不匹配" in error for error in result.errors)
+    assert any("runtime 不匹配" in error for error in result.errors)
+    assert any("设备变体不匹配" in error for error in result.errors)
+    assert any("glibc" in error for error in result.errors)
+
+
+def test_match_rejects_cuda_runtime_mismatch():
+    device = DeviceInfo(DeviceType.NVIDIA, "NVIDIA A800", 8, arch="x86_64")
+    runtime = ImageRuntimeInfo(
+        python_version="3.12", python_abi="cp312", arch="x86_64",
+        glibc_version="2.35", cuda_version="13.0", probe_ok=True)
+    result = validate_build_match(
+        device, "x86_64", "vllm/vllm-openai:v0.31.0-cu130",
+        "/tmp/uc_manager_cuda_cu129-0.9.0rc3-cp312-cp312-manylinux_2_28_x86_64.whl",
+        "/tmp/wrapt-1.17.2-cp312-cp312-manylinux_2_17_x86_64.whl",
+        image_runtime=runtime)
+    assert not result.ok
+    assert any("runtime 不匹配" in error for error in result.errors)
+
+
+def test_image_runtime_info_parses_cuda_tags():
+    info = ImageRuntimeInfo.from_image_ref("vllm/vllm-openai:v0.31.0-cu129")
+    assert info.cuda_version == "12.9"
+    assert info.cuda_code == "cu129"
+
+    info = ImageRuntimeInfo.from_image_ref("vllm/vllm-openai:v0.31.0-cu130")
+    assert info.cuda_version == "13.0"
+    assert info.cuda_code == "cu130"
+
+
+def test_image_runtime_info_parses_probe_output():
+    output = """__PYTHON__
+python=3.12
+arch=aarch64
+__GLIBC__
+ldd (Ubuntu GLIBC 2.34-0ubuntu3.7) 2.34
+__CUDA__
+cuda=12.9
+__CANN__
+Version=9.2.0
+"""
+    info = ImageRuntimeInfo.from_probe(
+        output, "quay.io/ascend/vllm-ascend:v0.30.0rc2-a5-openeuler")
+    assert info.python_version == "3.12"
+    assert info.python_abi == "cp312"
+    assert info.arch == "aarch64"
+    assert info.glibc_version == "2.34"
+    assert info.cuda_version == "12.9"
+    assert info.cann_version == "9.2.0"
+    assert info.cann_code == "cann920"
+    assert info.variant == "a5"
+    assert info.probe_ok
+    assert info.ucm_wheel_glibc == "2.34"
+
+
+def test_fetch_image_runtime_info_runs_docker_probe(fake_ssh):
+    output = """__PYTHON__
+python=3.12
+arch=x86_64
+__GLIBC__
+ldd (GNU libc) 2.35
+__CUDA__
+cuda=13.0
+__CANN__
+"""
+    fake_ssh.add_default(r"^docker run --rm --entrypoint /bin/sh", stdout=output)
+    ssh = make_ssh(fake_ssh)
+    info = fetch_image_runtime_info(
+        ssh, "registry.example.com/vllm-openai:v0.31.0-cu130")
+    assert info.python_version == "3.12"
+    assert info.python_abi == "cp312"
+    assert info.arch == "x86_64"
+    assert info.glibc_version == "2.35"
+    assert info.cuda_version == "13.0"
 
 
 # ============================================================ Dockerfile

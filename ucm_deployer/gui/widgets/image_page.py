@@ -31,9 +31,15 @@ from PySide6.QtWidgets import (
 from ...core.docker_manager import (DockerManager, platform_from_arch,
                                     validate_image_ref)
 from ...core.image_builder import (ImageBuildConfig, ImageBuilder,
+                                   ImageRuntimeInfo,
+                                   expected_ucm_components,
+                                   fetch_image_runtime_info,
                                    fetch_server_arch, suggest_tag,
+                                   ucm_wheel_components,
                                    upload_image_tar, validate_build_match,
-                                   whl_arch, whl_version)
+                                   validate_whl, wheel_distribution,
+                                   whl_arch, whl_glibc, whl_python_abi,
+                                   whl_version)
 from ...core.models import DeviceType, DockerImage
 from ...core.shell import shq
 from ..state import AppContext
@@ -52,6 +58,8 @@ class ImagePage(QWidget):
         self._updating_tag = False  # 程序设置 tag 中（不算用户编辑）
         self._pull_command_dirty = False
         self._updating_pull_command = False
+        self._image_runtime: Optional[ImageRuntimeInfo] = None
+        self._runtime_cache = {}
 
         # ---------- 1. 准备基础镜像
         image_box = QGroupBox("1. 准备基础镜像")
@@ -154,6 +162,9 @@ class ImagePage(QWidget):
 
         # ---------- 2. 上传安装包
         build_box = QGroupBox("2. 安装包（仅在需要构建新 UCM 镜像时填写）")
+        self.runtime_label = QLabel("基础镜像运行时：选择镜像后自动检测")
+        self.runtime_label.setProperty("role", "hint")
+        self.runtime_label.setWordWrap(True)
         self.wrapt_whl_edit = QLineEdit()
         self.ucm_whl_edit = QLineEdit()
         self.toolkit_edit = QLineEdit()
@@ -171,12 +182,12 @@ class ImagePage(QWidget):
         self.ucm_dl_hint = QLabel(
             '⬇ 本地没有 UCM 包？<a href="https://github.com/ModelEngine-Group/'
             'unified-cache-management/releases">从 GitHub Releases 在线下载'
-            ' uc_manager-*.whl</a>')
+            ' uc_manager-*.whl</a>（按基础镜像选择 CANN/CUDA、A2/A3/A5、'
+            'cp311/cp312 与 CPU 架构）')
         self.wrapt_dl_hint = QLabel(
             '⬇ 离线依赖 wrapt：<a href="https://pypi.org/project/wrapt/1.17.2/#files">'
             '从 PyPI (wrapt 1.17.2) 文件列表在线下载</a>'
-            '（选择匹配服务器 Python 版本与 CPU 架构的 whl，'
-            '如 manylinux 的 x86_64 / aarch64）')
+            '（选择匹配基础镜像 Python 版本、CPU 架构与 manylinux/glibc 的 whl）')
         self.toolkit_dl_hint = QLabel(
             '⬇ 本地没有 ucm-toolkit 包？<a href="https://github.com/ModelEngine-Group/'
             'unified-cache-management/releases">从 GitHub Releases 在线下载</a>'
@@ -197,14 +208,17 @@ class ImagePage(QWidget):
         for fb in (self.wrapt_fb, self.ucm_fb, self.toolkit_fb):
             fb.setProperty("role", "hint")
         self.wrapt_whl_edit.textChanged.connect(
-            lambda t: self._update_whl_feedback(self.wrapt_fb, t))
+            lambda t: self._update_whl_feedback(self.wrapt_fb, t, "wrapt"))
         self.ucm_whl_edit.textChanged.connect(
-            lambda t: (self._update_whl_feedback(self.ucm_fb, t),
+            lambda t: (self._update_whl_feedback(self.ucm_fb, t, "uc-manager"),
                        self._suggest_tag_if_empty()))   # UCM 版本号影响建议名
         self.toolkit_edit.textChanged.connect(
-            lambda t: self._update_whl_feedback(self.toolkit_fb, t))
+            lambda t: self._update_whl_feedback(self.toolkit_fb, t, "ucm-toolkit"))
+
+        self.image_combo.currentTextChanged.connect(self._on_base_image_changed)
 
         form = QFormLayout(build_box)
+        form.addRow("基础镜像运行时", self.runtime_label)
         row_w = QHBoxLayout()
         row_w.addWidget(self.wrapt_whl_edit, 1)
         row_w.addWidget(wrapt_btn)
@@ -325,6 +339,8 @@ class ImagePage(QWidget):
 
     def _select_source(self, index: int) -> None:
         self.source_combo.setCurrentIndex(index)
+        if index == 0:
+            self._on_base_image_changed(combo_ref(self.image_combo))
 
     def _selected_base(self) -> Optional[str]:
         if self.source_combo.currentIndex() != 0:
@@ -355,13 +371,101 @@ class ImagePage(QWidget):
         self.tag_edit.setText(suggest_tag(ref, ucm_ver))
         self._updating_tag = False
 
+    def _on_base_image_changed(self, ref: str) -> None:
+        """选择基础镜像后自动探测运行时，用于包选择提示与强校验。"""
+        self._image_runtime = None
+        self._refresh_whl_feedback()
+        server = self.ctx.server
+        ref = (ref or "").strip()
+        if not ref or server is None or self.source_combo.currentIndex() != 0:
+            self.runtime_label.setText(
+                "基础镜像运行时：选择服务器已有镜像后自动检测")
+            return
+        if ref in self._runtime_cache:
+            self._show_runtime_info(ref, self._runtime_cache[ref])
+            return
+        self.runtime_label.setText(f"基础镜像运行时：正在检测 {ref} ...")
+
+        def fn():
+            from ...core.ssh_client import SSHClient
+            with SSHClient(server) as ssh:
+                return fetch_image_runtime_info(ssh, ref)
+
+        def on_done(info, error):
+            if combo_ref(self.image_combo) != ref:
+                return
+            if error is not None or info is None:
+                self.runtime_label.setText(
+                    f"基础镜像运行时：检测失败（{error or '未知错误'}）。"
+                    "构建前仍会尝试校验，请手动核对 whl。")
+                return
+            self._runtime_cache[ref] = info
+            self._show_runtime_info(ref, info)
+
+        self._run_quick(fn, on_done)
+
+    def _show_runtime_info(self, ref: str, info: ImageRuntimeInfo) -> None:
+        self._image_runtime = info
+        device = self.ctx.device_of(self.ctx.server) if self.ctx.server else None
+        platform, runtime_code, variant = expected_ucm_components(
+            device, ref, info)
+        if platform == "cuda":
+            ucm_name = "uc_manager_cuda"
+            if runtime_code:
+                ucm_name += f"_cu{runtime_code}"
+        else:
+            ucm_name = "uc_manager"
+            if runtime_code:
+                ucm_name += f"_cann{runtime_code}"
+            if variant:
+                ucm_name += f"_{variant}"
+        if info.python_abi:
+            ucm_name += (
+                f"-*-{info.python_abi}-{info.python_abi}"
+                f"-manylinux_2_{info.ucm_wheel_glibc.split('.')[1]}"
+            )
+            if info.arch:
+                ucm_name += f"_{info.arch}"
+            ucm_name += ".whl"
+        else:
+            ucm_name += "-*.whl"
+
+        wrapt_name = "wrapt-1.17.2"
+        if info.python_abi and info.arch:
+            wrapt_name += (
+                f"-{info.python_abi}-{info.python_abi}"
+                f"-manylinux_2_17_{info.arch}.manylinux2014_{info.arch}.whl"
+            )
+        elif info.arch:
+            wrapt_name += f"-*-manylinux_2_17_{info.arch}.whl"
+        else:
+            wrapt_name += "-*.whl"
+
+        runtime_text = info.summary or "未能从镜像内探测到运行时细节"
+        if not info.probe_ok:
+            runtime_text += "（探测不完整）"
+        self.runtime_label.setText(
+            f"基础镜像运行时：{runtime_text}\n"
+            f"建议 UCM：{ucm_name}\n"
+            f"建议 wrapt：{wrapt_name}")
+        self._refresh_whl_feedback()
+
     def _on_tag_edited(self, text: str):
         """区分用户编辑与程序设置：用户改过即停止自动建议。"""
         if not self._updating_tag and text.strip():
             self._tag_dirty = True
 
-    def _update_whl_feedback(self, label: QLabel, text: str) -> None:
-        """whl 路径即时反馈：文件存在性 + 架构标记解析。"""
+    def _refresh_whl_feedback(self) -> None:
+        self._update_whl_feedback(
+            self.wrapt_fb, self.wrapt_whl_edit.text(), "wrapt")
+        self._update_whl_feedback(
+            self.ucm_fb, self.ucm_whl_edit.text(), "uc-manager")
+        self._update_whl_feedback(
+            self.toolkit_fb, self.toolkit_edit.text(), "ucm-toolkit")
+
+    def _update_whl_feedback(self, label: QLabel, text: str,
+                             expected_distribution: str) -> None:
+        """whl 路径即时反馈：文件有效性 + 基础镜像运行时匹配。"""
         path = text.strip()
         if not path:
             label.setText("")
@@ -370,11 +474,47 @@ class ImagePage(QWidget):
         if not os.path.isfile(path):
             label.setText(f"⚠ 文件不存在: {name}")
             return
+
+        facts = [f"文件有效 · 包名 {wheel_distribution(path) or '-'}"]
+        abi = whl_python_abi(path)
+        facts.append(f"Python {abi or '通用'}")
         arch = whl_arch(path)
-        if arch:
-            label.setText(f"✓ 文件有效 · 架构标记 {arch}")
+        facts.append(f"架构 {arch or '通用'}")
+        glibc = whl_glibc(path)
+        if glibc:
+            facts.append(f"glibc ≥ {glibc}")
+
+        errors, warnings = validate_whl(
+            path, expected_distribution, runtime=self._image_runtime,
+            fallback_arch=(self.ctx.device_of(self.ctx.server).arch
+                           if self.ctx.server else ""))
+        if expected_distribution == "uc-manager" and self.ctx.server:
+            wheel_platform, wheel_runtime, wheel_variant = \
+                ucm_wheel_components(path)
+            expected_platform, expected_runtime, expected_variant = \
+                expected_ucm_components(
+                    self.ctx.device_of(self.ctx.server),
+                    combo_ref(self.image_combo), self._image_runtime)
+            if wheel_platform in ("cann", "cuda") and \
+                    wheel_platform != expected_platform:
+                errors.append(f"UCM 平台应为 {expected_platform}")
+            elif wheel_platform == "generic" and expected_platform:
+                warnings.append("通用 UCM 包，请确认支持当前 CANN/CUDA 与设备变体")
+            if (wheel_runtime and expected_runtime
+                    and wheel_runtime != expected_runtime):
+                errors.append(f"UCM runtime 应为 {expected_runtime}")
+            if (wheel_variant and expected_variant
+                    and wheel_variant != expected_variant):
+                errors.append(f"UCM 设备变体应为 {expected_variant.upper()}")
+
+        if errors:
+            label.setText("⚠ " + " · ".join(facts) + "\n" + "；".join(errors))
+        elif warnings:
+            label.setText("⚠ " + " · ".join(facts) + "\n" + "；".join(warnings))
+        elif self._image_runtime is not None:
+            label.setText("✓ " + " · ".join(facts) + " · 与基础镜像运行时匹配")
         else:
-            label.setText("✓ 文件有效 · 纯 Python 包（跨架构）")
+            label.setText("✓ " + " · ".join(facts) + " · 等待基础镜像运行时检测")
 
     def _pick_file(self, edit: QLineEdit, flt: str) -> None:
         from PySide6.QtCore import QSettings
@@ -433,6 +573,7 @@ class ImagePage(QWidget):
         server = self.ctx.server
         current = self.ctx.images.get(server.id, "") if server else ""
         fill_image_combo(self.image_combo, self._images, current=current)
+        self._on_base_image_changed(combo_ref(self.image_combo))
         self._suggest_tag_if_empty()
 
     def _upload_tar(self) -> None:
@@ -587,15 +728,19 @@ class ImagePage(QWidget):
         args = self._local_args()
         if args is None:
             return
-        server, base, ucm_whl, wrapt_whl, _toolkit = args
+        server, base, ucm_whl, wrapt_whl, toolkit = args
         dev = self.ctx.device_of(server)
-        self.match_label.setText("匹配校验：正在校验（获取服务器架构 + 比对）...")
+        self.match_label.setText(
+            "匹配校验：正在检测基础镜像运行时并比对安装包...")
 
         def fn():
             from ...core.ssh_client import SSHClient
             with SSHClient(server) as ssh:
-                arch = fetch_server_arch(ssh)
-                return validate_build_match(dev, arch, base, ucm_whl, wrapt_whl)
+                runtime = fetch_image_runtime_info(ssh, base)
+                arch = runtime.arch or fetch_server_arch(ssh)
+                return validate_build_match(
+                    dev, arch, base, ucm_whl, wrapt_whl,
+                    image_runtime=runtime, toolkit_whl=toolkit)
 
         def on_done(result, error):
             if error is not None:
@@ -621,9 +766,14 @@ class ImagePage(QWidget):
         platform = "cuda" if dev.device_type == DeviceType.NVIDIA else "ascend"
 
         def fn(ssh, tctx):
-            tctx.progress(3, "构建前校验匹配（服务器/镜像/安装包）")
-            arch = fetch_server_arch(ssh)
-            match = validate_build_match(dev, arch, base, ucm_whl, wrapt_whl)
+            tctx.progress(3, "构建前校验匹配（基础镜像运行时/安装包）")
+            runtime = fetch_image_runtime_info(ssh, base)
+            arch = runtime.arch or fetch_server_arch(ssh)
+            if runtime.summary:
+                tctx.log("基础镜像运行时: " + runtime.summary)
+            match = validate_build_match(
+                dev, arch, base, ucm_whl, wrapt_whl,
+                image_runtime=runtime, toolkit_whl=toolkit)
             for w in match.warnings:
                 tctx.log("[警告] " + w)
             if not match.ok:

@@ -96,8 +96,9 @@ TerminateProcess 从未执行（这正是最初"保险失效"的原因）。
 - 设备已探测且卡数 > 0（否则错误）；
 - 镜像平台（按名称推断 ascend/cann → ascend；nvidia/cuda → nvidia）与设备类型一致
   （无法识别降级为警告）；
-- whl 文件名架构标记（`whl_arch`：manylinux2014_x86_64/aarch64 等）与服务器
-  `uname -m` 一致（纯 Python 包跳过）。
+- 在基础镜像内探测 Python 版本/ABI、CPU 架构、glibc、CANN/CUDA 与 Ascend 变体；
+- 校验 UCM whl 的 CANN/CUDA runtime、A2/A3/A5 变体，以及所有 whl 的 Python ABI、
+  架构与 manylinux/glibc 要求（纯 Python 包跳过架构校验）。
 
 ### 5.5 命令生成策略
 

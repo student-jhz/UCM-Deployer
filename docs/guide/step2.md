@@ -32,11 +32,11 @@
 
 | 包 | 必填 | 来源 |
 |---|---|---|
-| wrapt whl | ✅ | [PyPI wrapt 1.17.2](https://pypi.org/project/wrapt/1.17.2/#files)（注意匹配架构） |
-| UCM whl | ✅ | [GitHub Releases](https://github.com/ModelEngine-Group/unified-cache-management/releases) |
+| wrapt whl | ✅ | [PyPI wrapt 1.17.2](https://pypi.org/project/wrapt/1.17.2/#files)（按 Python ABI、CPU 架构与 manylinux/glibc 选择） |
+| UCM whl | ✅ | [GitHub Releases](https://github.com/ModelEngine-Group/unified-cache-management/releases)（按 CANN/CUDA、A2/A3/A5、Python ABI 与 CPU 架构选择） |
 | ucm-toolkit whl | 可选 | 与 UCM 同站点（步骤4 预检需要） |
 
-选择文件后**即时显示**文件有效性与架构标记（`x86_64` / `aarch64` / 纯 Python 包），帮助在上传前确认匹配。
+选择服务器已有镜像后，工具会在镜像内探测 Python 版本/ABI、CPU 架构、glibc、CANN/CUDA 与 Ascend 变体，并给出建议的 UCM/wrapt 文件名。选择文件后**即时显示**包名、Python ABI、架构、glibc 要求及与基础镜像运行时的匹配结果。
 
 ### 3. 新镜像名
 
@@ -47,7 +47,9 @@
 点「🔍 校验匹配」手动触发；点「🔨 开始构建」时也会**自动强制校验**：
 
 - 服务器设备类型（NPU/GPU）vs 镜像平台（按镜像名推断 ascend/nvidia）；
-- whl 文件名架构标记 vs 服务器 `uname -m`。
+- 基础镜像运行时：Python ABI、CPU 架构、glibc、CANN/CUDA；
+- UCM whl：CANN/CUDA runtime 与 A2/A3/A5 设备变体；
+- wrapt / UCM / ucm-toolkit whl 的包名、Python ABI、架构与 manylinux/glibc 要求。
 
 不匹配则**拒绝构建**并说明原因。
 

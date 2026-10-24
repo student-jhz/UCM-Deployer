@@ -69,6 +69,7 @@ def main() -> int:
 
     from ucm_deployer.core.container_manager import ContainerCreateConfig, \
         ContainerManager
+    from ucm_deployer.core.image_builder import ImageRuntimeInfo
     from ucm_deployer.core.models import (DeviceInfo, DeviceType, DockerImage,
                                           ServerInfo, UCMInfo)
     from ucm_deployer.core.precheck import PrecheckItem, PrecheckResult
@@ -134,27 +135,35 @@ def main() -> int:
     ip = win.image_page
     ip._loaded_sid = s1.id
     ip._images = [
-        DockerImage("quay.io/ascend/vllm-ascend", "v0.26.0rc1", "id1", "18.2GB",
+        DockerImage("vllm-ascend-ucm", "v0.30.0rc2-a5", "id1", "19.0GB",
                     "2026-10-12 10:20:33"),
-        DockerImage("vllm-ascend-ucm", "v0.26.0rc1", "id2", "19.0GB",
-                    "2026-10-18 09:00:12"),
+        DockerImage("quay.io/ascend/vllm-ascend", "v0.30.0rc2-a5-openeuler",
+                    "id2", "18.2GB", "2026-10-18 09:00:12"),
         DockerImage("quay.io/ascend/vllm-ascend", "v0.23.0-a3", "id3", "16.8GB",
-                    "2026-08-01 10:00:00"),
+                    "2026-10-18 09:00:12"),
     ]
     ip.placeholder.setVisible(False)
     ip.source_combo.setCurrentIndex(0)
+    ip._runtime_cache["vllm-ascend-ucm:v0.30.0rc2-a5"] = ImageRuntimeInfo(
+        python_version="3.12", python_abi="cp312", arch="aarch64",
+        glibc_version="2.34", cann_version="9.2", variant="a5", probe_ok=True)
     ip._apply_images()
     ip._update_platform_label()
     ip.registry_ref_edit.setText(
         "quay.io/ascend/vllm-ascend:v0.30.0rc2-a5-openeuler")
-    ip.ucm_whl_edit.setText(r"D:\packages\uc_manager-0.8.0.dev20261015-py3-none-any.whl")
-    ip.wrapt_whl_edit.setText(r"D:\packages\wrapt-1.17.2-cp39-cp39-manylinux2014_aarch64.whl")
-    ip.toolkit_edit.setText(r"D:\packages\ucm_toolkit-0.8.0.dev1-py3-none-any.whl")
+    ip.ucm_whl_edit.setText(
+        r"D:\packages\uc_manager_cann920_a5-0.9.0rc3-cp312-cp312-"
+        r"manylinux_2_34_aarch64.whl")
+    ip.wrapt_whl_edit.setText(
+        r"D:\packages\wrapt-1.17.2-cp312-cp312-"
+        r"manylinux_2_17_aarch64.manylinux2014_aarch64.whl")
+    ip.toolkit_edit.setText(
+        r"D:\packages\ucm_toolkit-0.9.0rc3-py3-none-any.whl")
     ip._suggest_tag_if_empty()
-    ip.match_label.setText("✓ 匹配校验：校验通过：服务器 Ascend950PR x8（aarch64）"
-                           " 与镜像/安装包匹配\n⚠ 无法从镜像名 repo1 判断平台——（演示略）")
-    ip.match_label.setText("✓ 匹配校验：校验通过：服务器 Ascend950PR x8（aarch64）"
-                           " 与镜像/安装包匹配")
+    ip.match_label.setText(
+        "✓ 匹配校验：校验通过：服务器 Ascend950PR x8（aarch64）；"
+        "基础镜像 Python 3.12（cp312） · aarch64 · glibc 2.34 · "
+        "CANN 9.2 · A5 与镜像/安装包匹配")
     goto(1)
     shot(win, "step2-build")
     ip.source_combo.setCurrentIndex(2)

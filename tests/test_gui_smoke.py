@@ -400,7 +400,8 @@ def test_image_page_download_hints(qapp, tmp_path):
     # wrapt 下载指引：PyPI 1.17.2 链接 + 架构匹配提示
     assert "pypi.org/project/wrapt/1.17.2" in page.wrapt_dl_hint.text()
     assert page.wrapt_dl_hint.openExternalLinks()
-    assert "aarch64" in page.wrapt_dl_hint.text(), "应提示选择匹配服务器架构的 whl"
+    assert "Python 版本" in page.wrapt_dl_hint.text()
+    assert "manylinux/glibc" in page.wrapt_dl_hint.text()
     # ucm-toolkit 下载指引：与 UCM 同站点（GitHub Releases）
     assert "unified-cache-management/releases" in page.toolkit_dl_hint.text()
     assert page.toolkit_dl_hint.openExternalLinks()
@@ -447,6 +448,80 @@ def test_image_page_refresh_populates_combo(qapp, tmp_path, fake_ssh):
     assert combo_ref(page.image_combo) == "ucm-engine:v0.1"
     # 默认镜像名已按所选镜像自动建议（<基础镜像名>:ucm）
     assert page.tag_edit.text().strip() == "ucm-engine:ucm"
+
+
+def test_image_page_apply_images_triggers_runtime_probe(qapp, tmp_path, monkeypatch):
+    """fill_image_combo 会阻断信号，刷新后必须手动触发运行时探测。"""
+    from ucm_deployer.core.models import DockerImage, ServerInfo
+    from ucm_deployer.core.server_registry import ServerRegistry
+    from ucm_deployer.gui.state import AppContext
+    from ucm_deployer.gui.widgets.image_page import ImagePage
+
+    ctx = AppContext(ServerRegistry(tmp_path))
+    ctx.selected = [ServerInfo.create(name="n1", host=UNREACHABLE_HOST,
+                                      port=UNREACHABLE_PORT)]
+    page = ImagePage(ctx)
+    calls = []
+    monkeypatch.setattr(page, "_on_base_image_changed",
+                        lambda ref: calls.append(ref))
+    page._images = [DockerImage("quay.io/ascend/vllm-ascend",
+                                "v0.30.0rc2-a5-openeuler", "id", "10GB")]
+    page._apply_images()
+    assert calls == ["quay.io/ascend/vllm-ascend:v0.30.0rc2-a5-openeuler"]
+
+
+def test_image_page_runtime_updates_package_suggestions(qapp, tmp_path, monkeypatch):
+    """选中镜像后展示运行时，并按运行时给出精确 wheel 建议/校验。"""
+    from ucm_deployer.core.image_builder import ImageRuntimeInfo
+    from ucm_deployer.core.models import DeviceInfo, DeviceType, DockerImage, ServerInfo
+    from ucm_deployer.core.server_registry import ServerRegistry
+    from ucm_deployer.gui.state import AppContext
+    from ucm_deployer.gui.widgets.common import combo_ref, fill_image_combo
+    from ucm_deployer.gui.widgets.image_page import ImagePage
+
+    ref = "quay.io/ascend/vllm-ascend:v0.30.0rc2-a5-openeuler"
+    ctx = AppContext(ServerRegistry(tmp_path))
+    server = ServerInfo.create(name="n1", host=UNREACHABLE_HOST,
+                               port=UNREACHABLE_PORT)
+    ctx.selected = [server]
+    ctx.devices = {server.id: DeviceInfo(
+        DeviceType.ASCEND, "Ascend950PR", 8, arch="aarch64")}
+    page = ImagePage(ctx)
+    fill_image_combo(page.image_combo,
+                     [DockerImage("quay.io/ascend/vllm-ascend",
+                                  "v0.30.0rc2-a5-openeuler", "id", "10GB")],
+                     current=ref)
+    assert combo_ref(page.image_combo) == ref
+
+    ucm = tmp_path / (
+        "uc_manager_cann920_a5-0.9.0rc3-cp312-cp312-"
+        "manylinux_2_34_aarch64.whl")
+    wrapt = tmp_path / (
+        "wrapt-1.17.2-cp312-cp312-"
+        "manylinux_2_17_aarch64.manylinux2014_aarch64.whl")
+    ucm.write_bytes(b"PK")
+    wrapt.write_bytes(b"PK")
+    page.ucm_whl_edit.setText(str(ucm))
+    page.wrapt_whl_edit.setText(str(wrapt))
+
+    runtime = ImageRuntimeInfo(
+        python_version="3.12", python_abi="cp312", arch="aarch64",
+        glibc_version="2.34", cann_version="9.2", variant="a5", probe_ok=True)
+    monkeypatch.setattr(
+        page, "_run_quick",
+        lambda fn, on_done: on_done(runtime, None))
+    page._on_base_image_changed(ref)
+
+    assert "Python 3.12" in page.runtime_label.text()
+    assert "CANN 9.2" in page.runtime_label.text()
+    assert "A5" in page.runtime_label.text()
+    assert ("建议 UCM：uc_manager_cann920_a5-*-cp312-cp312-"
+            "manylinux_2_34_aarch64.whl") in page.runtime_label.text()
+    assert ("建议 wrapt：wrapt-1.17.2-cp312-cp312-"
+            "manylinux_2_17_aarch64.manylinux2014_aarch64.whl") \
+        in page.runtime_label.text()
+    assert "与基础镜像运行时匹配" in page.ucm_fb.text()
+    assert "与基础镜像运行时匹配" in page.wrapt_fb.text()
 
 
 def test_image_page_pulls_registry_image_on_server(qapp, tmp_path, fake_ssh):
@@ -548,14 +623,21 @@ def test_image_page_whl_instant_feedback(qapp, tmp_path):
     wrapt.write_bytes(b"PK")
     page.wrapt_whl_edit.setText(str(wrapt))
     qapp.processEvents()
-    assert "架构标记 aarch64" in page.wrapt_fb.text()
-    assert "✓" in page.wrapt_fb.text()
+    assert "包名 wrapt" in page.wrapt_fb.text()
+    assert "Python cp39" in page.wrapt_fb.text()
+    assert "架构 aarch64" in page.wrapt_fb.text()
+    assert "glibc ≥ 2.17" in page.wrapt_fb.text()
+    assert "未能确认基础镜像 Python 版本" in page.wrapt_fb.text()
+    assert "未能确认基础镜像 glibc 版本" in page.wrapt_fb.text()
 
     ucm = tmp_path / "uc_manager-0.2.1-py3-none-any.whl"
     ucm.write_bytes(b"PK")
     page.ucm_whl_edit.setText(str(ucm))
     qapp.processEvents()
-    assert "纯 Python 包" in page.ucm_fb.text()
+    assert "包名 uc-manager" in page.ucm_fb.text()
+    assert "Python py3" in page.ucm_fb.text()
+    assert "架构 通用" in page.ucm_fb.text()
+    assert "通用 UCM 包" in page.ucm_fb.text()
 
     page.ucm_whl_edit.setText(str(tmp_path / "missing.whl"))
     qapp.processEvents()
