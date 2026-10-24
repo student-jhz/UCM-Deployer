@@ -8,6 +8,10 @@
 
 请确认选择的 wrapt whl 与服务器架构匹配（manylinux x86_64 / aarch64）；输入框下方的即时反馈与「校验匹配」都会提示架构标记。
 
+## 为什么仓库拉取不需要本地 Docker Desktop？
+
+v0.3.5 起镜像仓库模式改为**服务器直连拉取**：工具通过 SSH 在目标服务器上执行 `docker pull`，并按已探测架构追加 `--platform`。本地不下载、不导出、不上传镜像包，因此无需安装 Docker Desktop；目标服务器需已安装 Docker 且能访问对应仓库。
+
 ## 构建成功但提示「未检测到 UCM 安装」？
 
 UCM 包名存在**平台变体**（如 `uc-manager-cann910-a2`）。本工具按 `uc-manager*` 前缀宽泛匹配检测（`pip list | grep`），已覆盖各变体；若仍报错请确认 UCM whl 是否正确安装（可手动验证：`docker run --rm <镜像> pip list | grep uc`）。
@@ -22,7 +26,7 @@ UCM 包名存在**平台变体**（如 `uc-manager-cann910-a2`）。本工具按
 
 ## 预检显示 `uc_manager -` 或 `HDK=?`？
 
-v0.3.4 起，Deployer 会在 toolkit 识别失败时独立补齐事实：UCM 从 pip freeze/表格输出识别 `uc-manager-cann910-a5` 等平台变体；Ascend 驱动依次读取 `/usr/local/Ascend/driver/version.info` 与 `npu-smi info`，例如 `Version=25.6.rc1.b999` 会显示为 `HDK=25.6.rc1.b999` 并按 `> 25.2.0` 判定。详情区会标注 `[deployer] fact source`，便于核对来源。
+v0.3.4 起，Deployer 会在 toolkit 识别失败时独立补齐事实：UCM 从 pip freeze/表格输出识别 `uc-manager-cann910-a5`、`uc-manager-cuda-cu129` 等平台变体；Ascend 驱动依次读取 `/usr/local/Ascend/driver/version.info` 与 `npu-smi info`，例如 `Version=25.6.rc1.b999` 会显示为 `HDK=25.6.rc1.b999` 并按 `> 25.2.0` 判定。详情区会标注 `[deployer] fact source`，便于核对来源。
 
 ## 容器内 npu-smi 报 rc=172 / `device is used (-8020)`？
 
@@ -47,5 +51,5 @@ NPU 正被其他进程/容器占用（宿主机 `npu-smi info` 可正常查看�
 ## 如何在无真实服务器时验证程序？
 
 ```powershell
-.venv\Scripts\python -m pytest    # 155 项自动化测试，无需真实服务器
+.venv\Scripts\python -m pytest    # 159 项自动化测试，无需真实服务器
 ```

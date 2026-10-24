@@ -37,8 +37,11 @@ def ensure_cjk_font(app):
         families = QFontDatabase.applicationFontFamilies(font_id)
         if families:
             app.setFont(QFont(families[0], 10))
+            print(f"CJK font: {families[0]}")
             return True
-    return False
+    raise RuntimeError(
+        "未找到可用中文字体（msyh.ttc / simhei.ttf / NotoSansCJK），"
+        "拒绝生成小方框截图；请先安装中文字体后重试")
 
 
 def main() -> int:
@@ -139,6 +142,7 @@ def main() -> int:
                     "2026-08-01 10:00:00"),
     ]
     ip.placeholder.setVisible(False)
+    ip.source_combo.setCurrentIndex(0)
     ip._apply_images()
     ip._update_platform_label()
     ip.registry_ref_edit.setText(
@@ -153,6 +157,12 @@ def main() -> int:
                            " 与镜像/安装包匹配")
     goto(1)
     shot(win, "step2-build")
+    ip.source_combo.setCurrentIndex(2)
+    ip._update_pull_command()
+    goto(1)
+    shot(win, "step2-registry-pull")
+    ip.source_combo.setCurrentIndex(0)
+    goto(1)
 
     # ============================================================ 步骤3
     cp = win.container_page

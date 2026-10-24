@@ -276,7 +276,7 @@ footer {
     <a class="btn btn-primary" href="#quickstart">快速开始</a>
     <a class="btn btn-outline" href="https://github.com/student-jhz/UCM-Deployer/releases/latest/download/UCM-Deployer.exe">下载 EXE</a>
   </div>
-  <p class="meta">当前版本 v0.3.4 · 支持 Ascend NPU · NVIDIA GPU · Linux 服务器 · Docker</p>
+  <p class="meta">当前版本 v0.3.5 · 支持 Ascend NPU · NVIDIA GPU · Linux 服务器 · Docker</p>
 </header>
 
 <div class="container">
@@ -292,7 +292,7 @@ footer {
   <div class="cards">
     <div class="card"><h3>凭据复用</h3><p>密码或私钥登录，密码 Fernet 加密保存在本机，下次打开自动复用。</p></div>
     <div class="card"><h3>设备感知</h3><p>自动识别 Ascend / NVIDIA 型号、卡数与 CPU 架构，并按宿主机实际资源生成容器参数。</p></div>
-    <div class="card"><h3>镜像导入</h3><p>支持本地 tar 包上传，也支持输入镜像仓库地址，按目标架构拉取后自动导入服务器。</p></div>
+    <div class="card"><h3>镜像准备</h3><p>单一来源选择器：复用服务器镜像、离线导入 tar 包，或由目标服务器直连仓库拉取；本地无需 Docker Desktop。</p></div>
     <div class="card"><h3>按需构建</h3><p>仅在基础镜像未安装 UCM 时上传 wrapt、UCM、ucm-toolkit whl 并构建新镜像。</p></div>
     <div class="card"><h3>命令透明</h3><p>所有 Docker 命令先完整展示，允许编辑，再执行，避免黑盒操作。</p></div>
     <div class="card"><h3>环境预检</h3><p>显式选择容器，检查驱动、内核、共享内存、AIO 与存储带宽；UCM 与驱动版本支持多来源补齐。</p></div>
@@ -321,7 +321,7 @@ python -m venv .venv
   <div class="callout">
     <b>目标服务器要求</b>
     Linux + SSH + Docker；Ascend 服务器需宿主机可用 <code>npu-smi</code>；NVIDIA 服务器需 <code>nvidia-smi</code> 与 nvidia-container-runtime。
-    使用镜像仓库拉取时，本地还需安装并启动 Docker Desktop。
+    使用镜像仓库拉取时，目标服务器需能访问对应仓库；本地无需 Docker Desktop。
   </div>
   <h3>按需准备安装包</h3>
   <table>
@@ -373,12 +373,16 @@ python -m venv .venv
   <p>优先复用已安装 UCM 的镜像；仅在确需制作新镜像时，才把 wrapt、UCM 与可选的 ucm-toolkit 安装进基础镜像。</p>
   <figure class="figure">
     <img src="screenshots/step2-build.png" alt="镜像准备界面" loading="lazy">
-    <figcaption>镜像准备页：仓库地址拉取、基础镜像选择、按需构建与匹配校验</figcaption>
+    <figcaption>镜像准备页：镜像来源选择、基础镜像复用、按需构建与匹配校验</figcaption>
+  </figure>
+  <figure class="figure">
+    <img src="screenshots/step2-registry-pull.png" alt="服务器直连拉取镜像界面" loading="lazy">
+    <figcaption>仓库模式：目标服务器执行 docker pull，命令可编辑，本地无需 Docker Desktop</figcaption>
   </figure>
   <h3>操作流程</h3>
   <ol>
-    <li>导入镜像：可上传本地 tar / tar.gz，也可输入 <code>quay.io/ascend/vllm-ascend:v0.30.0rc2-a5-openeuler</code> 这类仓库地址。</li>
-    <li>自动匹配架构：本地 Docker 按目标服务器 CPU 架构执行 <code>docker pull --platform</code>，导出 <code>tar.gz</code> 后自动上传并 <code>docker load</code>。</li>
+    <li>选择镜像来源：默认复用「服务器已有镜像」，无需填写仓库地址；离线场景选择 tar / tar.gz 导入；在线场景输入仓库地址。</li>
+    <li>服务器直连拉取：目标服务器按 CPU 架构生成可编辑的 <code>docker pull --platform</code> 命令，本地无需 Docker Desktop，也不生成或上传 <code>tar.gz</code>。</li>
     <li>检查 UCM：点击「✅ 检查所选镜像 UCM」。已安装则记录该镜像并直接进入步骤 3，无需构建。</li>
     <li>按需构建：仅在基础镜像未安装 UCM 时选择 wrapt、UCM 与 ucm-toolkit whl。</li>
     <li>确认新镜像名：默认生成 <code>&lt;基础镜像名&gt;:ucm-&lt;UCM版本&gt;</code>，也可手动修改。</li>
@@ -394,8 +398,8 @@ python -m venv .venv
     </tbody>
   </table>
   <div class="callout">
-    <b>本地 Docker 前置条件</b>
-    使用镜像仓库拉取时，本机需安装并启动 Docker Desktop。工具会按目标服务器 <code>aarch64</code> / <code>x86_64</code> 选择对应平台，避免把错误架构镜像导入服务器。
+    <b>服务器拉取前置条件</b>
+    使用镜像仓库模式时，目标服务器需已安装 Docker 并能访问仓库。工具会按目标服务器 <code>aarch64</code> / <code>x86_64</code> 选择对应平台，避免拉取错误架构镜像。
   </div>
 </section>
 

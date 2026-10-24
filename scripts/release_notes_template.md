@@ -1,4 +1,4 @@
-# UCM Deployer v{VERSION}
+# UCM Deployer v0.3.5
 
 **UCM (Unified Cache Management) 安装与环境预检工具 —— Windows 桌面版**
 
@@ -10,11 +10,13 @@
 
 ## 本版本更新
 
-- **UCM 平台变体识别**：预检输出 `uc_manager -` 时，自动从 pip freeze/表格输出识别 `uc-manager-cann910-a5` 等包名，显示实际版本。
-- **Ascend 驱动版本补齐**：`HDK=?` 时自动读取 `/usr/local/Ascend/driver/version.info`，例如 `Version=25.6.rc1.b999` 会显示为 `HDK=25.6.rc1.b999`，并按 `> 25.2.0` 判定。
-- **通用多来源探测**：驱动版本依次支持 `version.info`、`npu-smi info`、`nvidia-smi`；探测来源写入详情区 `[deployer] fact source`，并保留 toolkit 原始输出。
-- **LD_PRELOAD 噪声隔离**：事实探测忽略缺失 `libjemalloc.so.2` 产生的 loader 警告，只解析有效 stdout。
-- **测试**：新增 A5 实测样例覆盖，包含完整预检增强链路。
+- **服务器直连拉取镜像**：输入镜像仓库地址后，在目标服务器执行 `docker pull --platform`；本地无需 Docker Desktop，也不再导出或上传 tar.gz。
+- **命令透明**：服务器拉取前展示可编辑命令，且仅允许以 `docker pull` 开头的命令执行。
+- **重设计步骤2镜像来源**：默认「服务器已有镜像」，无需填写仓库地址；离线场景保留 tar 导入；仓库场景独立显示，避免多个输入框和按钮同时出现。
+- **自动回到复用流程**：tar 导入或服务器拉取成功后自动切回「服务器已有镜像」并选中新镜像。
+- **修复来源切换显示**：选择本地镜像包或镜像仓库时，界面会切换到对应的输入区。
+- **CUDA UCM 变体回归**：预检补齐链路覆盖 `uc-manager-cuda-cu129==0.9.0rc3` 实测样例。
+- **测试**：新增镜像引用校验、架构转换、服务器拉取命令、GUI 来源切换与 CUDA/A5 预检增强用例。
 
 ## 主要功能
 

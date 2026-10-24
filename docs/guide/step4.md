@@ -2,7 +2,7 @@
 
 在**已创建的容器内**运行 `ucm-toolkit run precheck`，提前发现可能影响启动或缓存读写的问题。
 
-如果 toolkit 输出 `uc_manager -` 或 `HDK=?`，Deployer 不会直接放弃识别，而会在容器内独立探测事实来源：pip 包元数据（兼容 `uc-manager-cann910-a5` 等平台变体）、`/usr/local/Ascend/driver/version.info`、`npu-smi info`、`nvidia-smi`。补齐后的结果会在详情中标注 `[deployer] fact source`，不隐藏 toolkit 原始输出。
+如果 toolkit 输出 `uc_manager -` 或 `HDK=?`，Deployer 不会直接放弃识别，而会在容器内独立探测事实来源：pip 包元数据（兼容 `uc-manager-cann910-a5`、`uc-manager-cuda-cu129` 等平台变体）、`/usr/local/Ascend/driver/version.info`、`npu-smi info`、`nvidia-smi`。补齐后的结果会在详情中标注 `[deployer] fact source`，不隐藏 toolkit 原始输出。
 
 ![步骤4 界面](../screenshots/step4-precheck.png)
 
