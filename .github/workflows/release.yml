@@ -60,6 +60,14 @@ jobs:
           (Get-Content scripts/release_notes_template.md -Raw -Encoding UTF8).Replace('{VERSION}', $ver) |
             Set-Content -NoNewline -Encoding UTF8 release_body.md
 
+      - name: 删除已存在的同名 Release（重发时刷新正文）
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ inputs.tag || github.ref_name }}"
+          gh release delete $tag --repo $env:GITHUB_REPOSITORY --yes || $true
+
       - name: 上传到 GitHub Release
         uses: softprops/action-gh-release@v2
         env:
