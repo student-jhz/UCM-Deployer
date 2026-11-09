@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 from ..version import APP_NAME, __version__
 from .state import AppContext
 from .theme import make_app_icon
+from .widgets.batch_page import BatchPage
 from .widgets.container_page import ContainerPage
 from .widgets.image_page import ImagePage
 from .widgets.precheck_page import PrecheckPage
@@ -32,6 +33,7 @@ _STEPS = [
     ("步骤2：镜像准备", "复用已含 UCM 的镜像，或按需构建新 UCM 镜像"),
     ("步骤3：容器准备", "按需创建 UCM 容器；已有容器可直接进入步骤4"),
     ("步骤4：环境预检", "显式选择容器并运行 UCM 环境预检"),
+    ("步骤5：批量部署", "多台服务器分发镜像、创建容器并预检；支持数据模板导入导出"),
 ]
 
 
@@ -112,8 +114,9 @@ class MainWindow(QMainWindow):
         self.image_page = ImagePage(self.ctx)
         self.container_page = ContainerPage(self.ctx)
         self.precheck_page = PrecheckPage(self.ctx)
+        self.batch_page = BatchPage(self.ctx)
         for p in (self.server_page, self.image_page,
-                  self.container_page, self.precheck_page):
+                  self.container_page, self.precheck_page, self.batch_page):
             self.pages.addWidget(p)
 
         center = QHBoxLayout()
@@ -206,6 +209,9 @@ class MainWindow(QMainWindow):
         ctrs = "已创建" if (server and self.ctx.containers.get(server.id)) else "未创建"
         msg = (f"服务器 {server.name if server else '未登录'}"
                f"    |    UCM 镜像 {imgs}    |    容器 {ctrs}")
+        batch_count = len(self.batch_page._target_ids)
+        if batch_count:
+            msg = f"批量目标 {batch_count} 台    |    " + msg
         busy = sum(1 for p in self._all_panels() if p.is_running())
         if busy:
             msg = f"⚙ 后台任务运行中 ×{busy}    |    " + msg
@@ -213,7 +219,8 @@ class MainWindow(QMainWindow):
 
     def _all_panels(self):
         return [p.panel for p in (self.server_page, self.image_page,
-                                  self.container_page, self.precheck_page)]
+                                  self.container_page, self.precheck_page,
+                                  self.batch_page)]
 
     # ------------------------------------------------------------ 导航
     def goto_step(self, row: int) -> None:
@@ -239,6 +246,8 @@ class MainWindow(QMainWindow):
             self.container_page.on_enter()
         elif row == 3:
             self.precheck_page.on_enter()
+        elif row == 4:
+            self.batch_page.on_enter()
 
         self._active_row = row
         self.pages.setCurrentIndex(row)

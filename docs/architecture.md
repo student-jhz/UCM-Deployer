@@ -28,21 +28,22 @@ vLLM / vLLM-Ascend / SGLang 运行容器中安装 UCM 并完成环境预检，
 
 ```
 ┌────────────────────────────────────────────────────────┐
-│ GUI (PySide6)   4 步向导：服务器/镜像/容器/预检          │
+│ GUI (PySide6)   5 步向导：服务器/镜像/容器/预检/批量部署 │
 │   main_window.py + widgets/{server,image,container,     │
-│   precheck}_page；工具菜单: cleanup_dialog.py           │
+│   precheck,batch}_page；工具菜单: cleanup_dialog.py     │
 ├────────────────────────────────────────────────────────┤
 │ Core 核心逻辑   ucm_deployer/core/*（不依赖 Qt）        │
 │   ssh_client  server_registry  crypto  models  shell    │
 │   device_detector  docker_manager                       │
 │   image_builder  container_manager  precheck            │
+│   batch_deploy（多服务器分发/模板）                      │
 ├────────────────────────────────────────────────────────┤
 │ 自验证设施                                              │
 │   tests/fake_ssh.py    单元测试级：脚本化 paramiko 替身   │
 └────────────────────────────────────────────────────────┘
 ```
 
-## 4. 三步流程与模块映射
+## 4. 五步流程与模块映射
 
 | 步骤 | 功能 | 模块 |
 |---|---|---|
@@ -50,10 +51,11 @@ vLLM / vLLM-Ascend / SGLang 运行容器中安装 UCM 并完成环境预检，
 | 步骤2 | 基础镜像选择（筛选）/上传 tar、上传 wrapt/UCM/ucm-toolkit whl、匹配校验、构建 | `docker_manager` + `image_builder` |
 | 步骤3 | 选 UCM 镜像（自动校验）、全卡映射 docker run 生成/编辑/执行、挂载管理 | `container_manager` |
 | 步骤4 | 容器内 ucm-toolkit precheck（环境检查 + 挂载目录带宽测试，临时子目录自动清理） | `precheck` |
+| 步骤5 | 多服务器批量部署：镜像分发（tar 中转/仓库拉取）+ 容器创建 + 预检；部署数据模板（JSON）导入导出 | `batch_deploy` |
 
 导航策略：各步之间**允许自由跳转**（不做前置条件校验）；前置条件
 （已登录服务器/已确定 UCM 镜像/已创建容器）由各步骤内的操作在执行时拦截提示。
-步骤3/4 页面紧凑排版，1280x860 一屏可见。
+步骤3/4/5 页面紧凑排版，1280x860 一屏可见。
 
 ## 5. 关键设计决策
 

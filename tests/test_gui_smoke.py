@@ -85,7 +85,7 @@ def test_nav_is_flat_buttons(qapp):
 
     win = MainWindow()
     qapp.processEvents()
-    assert len(win._nav_buttons) == 4
+    assert len(win._nav_buttons) == 5
     assert win.nav_group.exclusive()
     for i, btn in enumerate(win._nav_buttons):
         assert btn.objectName() == "navBtn"
@@ -939,7 +939,7 @@ def test_precheck_page_runs_and_shows_result(qapp, tmp_path, fake_ssh):
     rm_cmd = next(c for c in cmds if "rm -rf" in c)
     assert "ucm-precheck-" in rm_cmd
     # 日志播报临时目录路径与清理结果
-    log_text = page.panel._logs[s.id].toPlainText()
+    log_text = page.panel._logs[page.panel._threads[0]].toPlainText()
     assert "带宽测试临时目录" in log_text and "ucm-precheck-" in log_text
     assert "已清理临时目录" in log_text
 

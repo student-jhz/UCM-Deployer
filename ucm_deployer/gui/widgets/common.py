@@ -203,6 +203,10 @@ class ParallelTaskPanel(QWidget):
     用法（推荐）：
         panel.run_tasks(tasks, "标题", on_finished=lambda all_ok: ...)
     on_finished 由面板内部一次性连接，任务被拒（忙碌）时不会残留。
+
+    同一服务器可以同时有多个任务（如批量部署中源服务器既准备镜像包、
+    又作为部署目标）：进度条/日志/结果按「任务线程」而非 server.id
+    路由，避免互相覆盖。
     """
 
     finished_all = Signal(bool)
@@ -210,10 +214,10 @@ class ParallelTaskPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._threads: List[ServerTaskThread] = []
-        self._results: Dict[str, Tuple[bool, str]] = {}
+        self._results: Dict[ServerTaskThread, Tuple[bool, str]] = {}
         self._total = 0
-        self._logs: Dict[str, QPlainTextEdit] = {}
-        self._bars: Dict[str, QProgressBar] = {}
+        self._logs: Dict[ServerTaskThread, QPlainTextEdit] = {}
+        self._bars: Dict[ServerTaskThread, QProgressBar] = {}
 
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["服务器", "进度", "状态"])
@@ -270,7 +274,6 @@ class ParallelTaskPanel(QWidget):
             bar.setValue(0)
             bar.setFormat("等待中")
             self.table.setCellWidget(row, 1, bar)
-            self._bars[server.id] = bar
             status = QTableWidgetItem("排队中")
             status.setForeground(Qt.gray)
             self.table.setItem(row, 2, status)
@@ -281,13 +284,18 @@ class ParallelTaskPanel(QWidget):
             font = QFont("Consolas")
             font.setStyleHint(QFont.Monospace)
             edit.setFont(font)
-            self._logs[server.id] = edit
             self.tabs.addTab(edit, server.name)
 
             thread = ServerTaskThread(server, fn, self)
-            thread.signals.sig_progress.connect(self._on_progress)
-            thread.signals.sig_log.connect(self._on_log)
-            thread.signals.sig_done.connect(self._on_done)
+            self._bars[thread] = bar
+            self._logs[thread] = edit
+            # 按「线程」路由信号（同一服务器多任务时行/页签互不覆盖）
+            thread.signals.sig_progress.connect(
+                lambda _sid, pct, msg, t=thread: self._on_progress(t, pct, msg))
+            thread.signals.sig_log.connect(
+                lambda _sid, line, t=thread: self._on_log(t, line))
+            thread.signals.sig_done.connect(
+                lambda _sid, ok, message, t=thread: self._on_done(t, ok, message))
             self._threads.append(thread)
             _task_threads.add(thread)
 
@@ -332,20 +340,20 @@ class ParallelTaskPanel(QWidget):
         self.cancel_btn.setEnabled(False)
         self._set_status_all("正在取消...")
 
-    def _row_of(self, server_id: str) -> int:
+    def _row_of(self, thread: ServerTaskThread) -> int:
         for i, t in enumerate(self._threads):
-            if t.server.id == server_id:
+            if t is thread:
                 return i
         return -1
 
-    def _on_progress(self, server_id: str, pct: int, msg: str) -> None:
-        bar = self._bars.get(server_id)
+    def _on_progress(self, thread: ServerTaskThread, pct: int, msg: str) -> None:
+        bar = self._bars.get(thread)
         if bar is not None:
             bar.setValue(max(0, min(100, int(pct))))
             bar.setFormat(f"{pct}%  {msg}" if msg else f"{pct}%")
 
-    def _on_log(self, server_id: str, line: str) -> None:
-        edit = self._logs.get(server_id)
+    def _on_log(self, thread: ServerTaskThread, line: str) -> None:
+        edit = self._logs.get(thread)
         if edit is not None:
             edit.appendPlainText(line)
 
@@ -355,10 +363,10 @@ class ParallelTaskPanel(QWidget):
             if item is not None:
                 item.setText(text)
 
-    def _on_done(self, server_id: str, ok: bool, message: str) -> None:
-        self._results[server_id] = (ok, message)
-        row = self._row_of(server_id)
-        bar = self._bars.get(server_id)
+    def _on_done(self, thread: ServerTaskThread, ok: bool, message: str) -> None:
+        self._results[thread] = (ok, message)
+        row = self._row_of(thread)
+        bar = self._bars.get(thread)
         if bar is not None:
             if ok:
                 if bar.value() < 100:

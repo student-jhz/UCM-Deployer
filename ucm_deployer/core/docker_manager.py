@@ -104,6 +104,25 @@ class DockerManager:
             refs.append(m.group(1))
         return refs
 
+    def save_image(self, ref: str, remote_path: str,
+                   on_line: Optional[Callable[[str], None]] = None) -> None:
+        """docker save | gzip 导出镜像压缩包到远端路径。
+
+        用 pipefail 确保管道中 docker save 失败能够反映到退出码；
+        导出完成后校验文件非空。
+        """
+        ref = validate_image_ref(ref)
+        inner = (f"set -o pipefail; docker save {shq(ref)} "
+                 f"| gzip -1 > {shq(remote_path)}")
+        res = self.ssh.exec_stream(f"bash -c {shq(inner)}",
+                                   on_line=on_line, timeout=7200)
+        if not res.ok:
+            detail = (res.stderr or res.stdout).strip()[:300]
+            raise DockerError(f"docker save 失败(退出码 {res.exit_code}): {detail}")
+        check = self.ssh.exec(f"test -s {shq(remote_path)}", timeout=30)
+        if not check.ok:
+            raise DockerError(f"镜像导出结果为空文件: {remote_path}")
+
     def build(self, context_dir: str, tag: str,
               on_line: Optional[Callable[[str], None]] = None) -> CommandResult:
         cmd = f"docker build -t {shq(tag)} {shq(context_dir)}"
