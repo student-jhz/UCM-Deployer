@@ -2,7 +2,7 @@
 
 ## 方式一：直接使用 exe（推荐）
 
-从 [Releases 直接下载最新版 `UCM-Deployer.exe`](https://github.com/student-jhz/UCM-Deployer/releases/latest/download/UCM-Deployer.exe)，双击即可运行（无需安装 Python）。
+从 [Releases 直接下载最新版 `UCM-Deployer.exe`](https://github.com/ucm-system/UCM-Deployer/releases/latest/download/UCM-Deployer.exe)，双击即可运行（无需安装 Python）。
 
 产物自检（可选）：
 
@@ -13,7 +13,7 @@
 ## 方式二：源码运行 / 开发
 
 ```powershell
-git clone https://github.com/student-jhz/UCM-Deployer.git
+git clone https://github.com/ucm-system/UCM-Deployer.git
 cd UCM-Deployer
 python -m venv .venv                       # Python 3.9+
 .venv\Scripts\pip install -r requirements-dev.txt

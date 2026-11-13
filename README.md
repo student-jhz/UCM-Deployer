@@ -2,7 +2,7 @@
 
 **UCM (Unified Cache Management) 安装与环境预检工具 —— Windows 桌面版**
 
-:book: **[在线使用文档（含界面截图）](https://student-jhz.github.io/UCM-Deployer/)**
+:book: **[在线使用文档（含界面截图）](https://ucm-system.github.io/UCM-Deployer/)**
 
 面向 vLLM / vLLM-Ascend / SGLang 运行环境（Ascend NPU / NVIDIA GPU），把 UCM 安装与环境预检简化为五个向导步骤：
 

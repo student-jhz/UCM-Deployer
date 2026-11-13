@@ -9,7 +9,7 @@
 ```
 
 [快速开始 :material-rocket-launch:](guide/install.md){ .md-button .md-button--primary }
-[下载最新版 exe](https://github.com/student-jhz/UCM-Deployer/releases/latest/download/UCM-Deployer.exe){ .md-button }
+[下载最新版 exe](https://github.com/ucm-system/UCM-Deployer/releases/latest/download/UCM-Deployer.exe){ .md-button }
 
 ---
 
@@ -41,6 +41,6 @@
 
 ## 相关链接
 
-- [GitHub 仓库](https://github.com/student-jhz/UCM-Deployer)
-- [下载发布版](https://github.com/student-jhz/UCM-Deployer/releases)
+- [GitHub 仓库](https://github.com/ucm-system/UCM-Deployer)
+- [下载发布版](https://github.com/ucm-system/UCM-Deployer/releases)
 - [UCM 项目（unified-cache-management）](https://github.com/ModelEngine-Group/unified-cache-management)

@@ -39,4 +39,4 @@
 .\UCM-Deployer.exe --smoke
 ```
 
-源码运行 / 开发见 [README](https://github.com/student-jhz/UCM-Deployer#readme)。
+源码运行 / 开发见 [README](https://github.com/ucm-system/UCM-Deployer#readme)。
